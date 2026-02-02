@@ -194,18 +194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "katasymbol-backend"
-version = "0.1.0"
-dependencies = [
- "clap",
- "dbus",
- "env_logger",
- "katasymbol-proto",
- "libc",
- "log",
-]
-
-[[package]]
 name = "katasymbol-cli"
 version = "0.1.0"
 dependencies = [
@@ -224,16 +212,6 @@ dependencies = [
  "katasymbol-proto",
  "libc",
  "log",
-]
-
-[[package]]
-name = "katasymbol-filter"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "katasymbol-proto",
- "log",
- "pkg-config",
 ]
 
 [[package]]
