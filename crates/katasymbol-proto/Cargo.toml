@@ -1,0 +1,10 @@
+[package]
+name = "katasymbol-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+log.workspace = true
+thiserror.workspace = true
+xz2 = "0.1"
+libc = "0.2"

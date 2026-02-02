@@ -1,0 +1,18 @@
+/target/
+*.o
+__pycache__/
+
+# Reverse engineering artifacts
+/apk-decompiled/
+/app/
+/app-src/
+/extracted/
+/jadx/
+/xapk/
+*.xapk
+*.apk
+*.rar
+*.exe
+
+# PAPPL build output
+/pappl/katasymbol-printer-app

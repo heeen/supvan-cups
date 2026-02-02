@@ -1,0 +1,177 @@
+*PPD-Adobe: "4.3"
+*%
+*% PPD file for Katasymbol M50 Pro / Supvan T50 Pro thermal label printer
+*%
+*FormatVersion: "4.3"
+*FileVersion: "1.0"
+*LanguageVersion: English
+*LanguageEncoding: ISOLatin1
+*PCFileName: "katasymbol.ppd"
+*Manufacturer: "Katasymbol"
+*Product: "(Katasymbol M50 Pro)"
+*ModelName: "Katasymbol M50 Pro"
+*ShortNickName: "Katasymbol M50 Pro"
+*NickName: "Katasymbol M50 Pro"
+*PSVersion: "(3010.000) 0"
+*LanguageLevel: "3"
+*ColorDevice: False
+*DefaultColorSpace: Gray
+*FileSystem: False
+*Throughput: "1"
+*LandscapeOrientation: Plus90
+*TTRasterizer: Type42
+
+*% Filter: raster data through our filter
+*cupsFilter: "application/vnd.cups-raster 50 rastertokatasymbol"
+
+*% Resolution: 203 DPI (8 dots/mm)
+*DefaultResolution: 203dpi
+*Resolution 203dpi: "<</HWResolution[203 203]>>setpagedevice"
+
+*% Color model: 1-bit monochrome black
+*OpenUI *ColorModel/Color Model: PickOne
+*OrderDependency: 10 AnySetup *ColorModel
+*DefaultColorModel: Black
+*ColorModel Black/Black: "<</cupsColorSpace 3/cupsBitsPerColor 1/cupsColorOrder 0>>setpagedevice"
+*CloseUI: *ColorModel
+
+*% Print density
+*OpenUI *KatasymbolDensity/Print Density: PickOne
+*OrderDependency: 20 AnySetup *KatasymbolDensity
+*DefaultKatasymbolDensity: 4
+*KatasymbolDensity 1/Light: ""
+*KatasymbolDensity 2/Light-Medium: ""
+*KatasymbolDensity 3/Medium: ""
+*KatasymbolDensity 4/Standard: ""
+*KatasymbolDensity 5/Dark: ""
+*KatasymbolDensity 6/Extra Dark: ""
+*CloseUI: *KatasymbolDensity
+
+*% ============================================================
+*% Media sizes - common Supvan label dimensions
+*% All sizes are width x height (feed direction = height)
+*% Points = mm * 72/25.4
+*% ============================================================
+
+*OpenUI *PageSize/Media Size: PickOne
+*OrderDependency: 30 AnySetup *PageSize
+*DefaultPageSize: w113h85
+
+*% 40mm x 30mm (most common)
+*PageSize w113h85/40x30mm: "<</PageSize[113.39 85.04]/ImagingBBox null>>setpagedevice"
+
+*% 40mm x 20mm
+*PageSize w113h57/40x20mm: "<</PageSize[113.39 56.69]/ImagingBBox null>>setpagedevice"
+
+*% 40mm x 40mm
+*PageSize w113h113/40x40mm: "<</PageSize[113.39 113.39]/ImagingBBox null>>setpagedevice"
+
+*% 40mm x 50mm
+*PageSize w113h142/40x50mm: "<</PageSize[113.39 141.73]/ImagingBBox null>>setpagedevice"
+
+*% 40mm x 60mm
+*PageSize w113h170/40x60mm: "<</PageSize[113.39 170.08]/ImagingBBox null>>setpagedevice"
+
+*% 30mm x 15mm
+*PageSize w85h43/30x15mm: "<</PageSize[85.04 42.52]/ImagingBBox null>>setpagedevice"
+
+*% 30mm x 20mm
+*PageSize w85h57/30x20mm: "<</PageSize[85.04 56.69]/ImagingBBox null>>setpagedevice"
+
+*% 30mm x 30mm
+*PageSize w85h85/30x30mm: "<</PageSize[85.04 85.04]/ImagingBBox null>>setpagedevice"
+
+*% 48mm x 25mm
+*PageSize w136h71/48x25mm: "<</PageSize[136.06 70.87]/ImagingBBox null>>setpagedevice"
+
+*% 48mm x 30mm
+*PageSize w136h85/48x30mm: "<</PageSize[136.06 85.04]/ImagingBBox null>>setpagedevice"
+
+*% 48mm x 48mm
+*PageSize w136h136/48x48mm: "<</PageSize[136.06 136.06]/ImagingBBox null>>setpagedevice"
+
+*% 25mm x 10mm
+*PageSize w71h28/25x10mm: "<</PageSize[70.87 28.35]/ImagingBBox null>>setpagedevice"
+
+*% 25mm x 15mm
+*PageSize w71h43/25x15mm: "<</PageSize[70.87 42.52]/ImagingBBox null>>setpagedevice"
+
+*% 20mm x 10mm
+*PageSize w57h28/20x10mm: "<</PageSize[56.69 28.35]/ImagingBBox null>>setpagedevice"
+
+*% 15mm x 30mm
+*PageSize w43h85/15x30mm: "<</PageSize[42.52 85.04]/ImagingBBox null>>setpagedevice"
+
+*CloseUI: *PageSize
+
+*OpenUI *PageRegion: PickOne
+*OrderDependency: 40 AnySetup *PageRegion
+*DefaultPageRegion: w113h85
+*PageRegion w113h85/40x30mm: "<</PageSize[113.39 85.04]/ImagingBBox null>>setpagedevice"
+*PageRegion w113h57/40x20mm: "<</PageSize[113.39 56.69]/ImagingBBox null>>setpagedevice"
+*PageRegion w113h113/40x40mm: "<</PageSize[113.39 113.39]/ImagingBBox null>>setpagedevice"
+*PageRegion w113h142/40x50mm: "<</PageSize[113.39 141.73]/ImagingBBox null>>setpagedevice"
+*PageRegion w113h170/40x60mm: "<</PageSize[113.39 170.08]/ImagingBBox null>>setpagedevice"
+*PageRegion w85h43/30x15mm: "<</PageSize[85.04 42.52]/ImagingBBox null>>setpagedevice"
+*PageRegion w85h57/30x20mm: "<</PageSize[85.04 56.69]/ImagingBBox null>>setpagedevice"
+*PageRegion w85h85/30x30mm: "<</PageSize[85.04 85.04]/ImagingBBox null>>setpagedevice"
+*PageRegion w136h71/48x25mm: "<</PageSize[136.06 70.87]/ImagingBBox null>>setpagedevice"
+*PageRegion w136h85/48x30mm: "<</PageSize[136.06 85.04]/ImagingBBox null>>setpagedevice"
+*PageRegion w136h136/48x48mm: "<</PageSize[136.06 136.06]/ImagingBBox null>>setpagedevice"
+*PageRegion w71h28/25x10mm: "<</PageSize[70.87 28.35]/ImagingBBox null>>setpagedevice"
+*PageRegion w71h43/25x15mm: "<</PageSize[70.87 42.52]/ImagingBBox null>>setpagedevice"
+*PageRegion w57h28/20x10mm: "<</PageSize[56.69 28.35]/ImagingBBox null>>setpagedevice"
+*PageRegion w43h85/15x30mm: "<</PageSize[42.52 85.04]/ImagingBBox null>>setpagedevice"
+*CloseUI: *PageRegion
+
+*% ImageableArea: full bleed (printer handles margins internally)
+*DefaultImageableArea: w113h85
+*ImageableArea w113h85/40x30mm: "0 0 113.39 85.04"
+*ImageableArea w113h57/40x20mm: "0 0 113.39 56.69"
+*ImageableArea w113h113/40x40mm: "0 0 113.39 113.39"
+*ImageableArea w113h142/40x50mm: "0 0 113.39 141.73"
+*ImageableArea w113h170/40x60mm: "0 0 113.39 170.08"
+*ImageableArea w85h43/30x15mm: "0 0 85.04 42.52"
+*ImageableArea w85h57/30x20mm: "0 0 85.04 56.69"
+*ImageableArea w85h85/30x30mm: "0 0 85.04 85.04"
+*ImageableArea w136h71/48x25mm: "0 0 136.06 70.87"
+*ImageableArea w136h85/48x30mm: "0 0 136.06 85.04"
+*ImageableArea w136h136/48x48mm: "0 0 136.06 136.06"
+*ImageableArea w71h28/25x10mm: "0 0 70.87 28.35"
+*ImageableArea w71h43/25x15mm: "0 0 70.87 42.52"
+*ImageableArea w57h28/20x10mm: "0 0 56.69 28.35"
+*ImageableArea w43h85/15x30mm: "0 0 42.52 85.04"
+
+*DefaultPaperDimension: w113h85
+*PaperDimension w113h85/40x30mm: "113.39 85.04"
+*PaperDimension w113h57/40x20mm: "113.39 56.69"
+*PaperDimension w113h113/40x40mm: "113.39 113.39"
+*PaperDimension w113h142/40x50mm: "113.39 141.73"
+*PaperDimension w113h170/40x60mm: "113.39 170.08"
+*PaperDimension w85h43/30x15mm: "85.04 42.52"
+*PaperDimension w85h57/30x20mm: "85.04 56.69"
+*PaperDimension w85h85/30x30mm: "85.04 85.04"
+*PaperDimension w136h71/48x25mm: "136.06 70.87"
+*PaperDimension w136h85/48x30mm: "136.06 85.04"
+*PaperDimension w136h136/48x48mm: "136.06 136.06"
+*PaperDimension w71h28/25x10mm: "70.87 28.35"
+*PaperDimension w71h43/25x15mm: "70.87 42.52"
+*PaperDimension w57h28/20x10mm: "56.69 28.35"
+*PaperDimension w43h85/15x30mm: "42.52 85.04"
+
+*% Custom page size: 10mm-48mm width, 10mm-300mm height
+*MaxMediaWidth: "136.06"
+*MaxMediaHeight: "850.39"
+*HWMargins: 0 0 0 0
+*CustomPageSize True: "pop pop pop <</PageSize[5 -2 roll]/ImagingBBox null>>setpagedevice"
+*ParamCustomPageSize Width: 1 points 28.35 136.06
+*ParamCustomPageSize Height: 2 points 28.35 850.39
+*ParamCustomPageSize WidthOffset: 3 points 0 0
+*ParamCustomPageSize HeightOffset: 4 points 0 0
+*ParamCustomPageSize Orientation: 5 int 0 0
+
+*% Marker supplies for CUPS UI
+*cupsMarkerName: "Labels"
+*cupsMarkerType: labels
+
+*% End of PPD

@@ -1,0 +1,12 @@
+[Unit]
+Description=Katasymbol M50 Pro Printer Application
+After=bluetooth.target dbus.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/katasymbol-printer-app server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
