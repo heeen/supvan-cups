@@ -9,7 +9,7 @@ use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
 use crate::job::KsJob;
 use crate::printer_device::KsDevice;
-use crate::util::copy_to_c_buf;
+
 
 /// Helper: get printer darkness setting (0-100).
 unsafe fn get_darkness(job: *mut pappl_job_t) -> i32 {
@@ -189,18 +189,6 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
     fill_media_col(&mut ready, best);
 
     papplPrinterSetReadyMedia(printer, 1, &mut ready);
-
-    // Report labels remaining as a supply
-    if mat.remaining >= 0 {
-        let mut supply: pappl_supply_t = Default::default();
-        let desc = format!("Labels ({} remaining)", mat.remaining);
-        copy_to_c_buf(&mut supply.description, desc.as_bytes());
-        supply.color = pappl_supply_color_e_PAPPL_SUPPLY_COLOR_NO_COLOR;
-        supply.type_ = pappl_supply_type_e_PAPPL_SUPPLY_TYPE_OTHER;
-        supply.is_consumed = true;
-        supply.level = (mat.remaining as i32).min(100);
-        papplPrinterSetSupplies(printer, 1, &mut supply);
-    }
 
     true
 }

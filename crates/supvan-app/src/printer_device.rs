@@ -17,8 +17,6 @@ pub struct KsDevice {
 pub struct KsMaterial {
     pub width_mm: u8,
     pub height_mm: u8,
-    /// -1 if unknown.
-    pub remaining: i32,
 }
 
 // PAPPL pappl_preason_t bit flags.
@@ -134,7 +132,6 @@ impl KsDevice {
                 return Some(KsMaterial {
                     width_mm: 40,
                     height_mm: 30,
-                    remaining: -1,
                 });
             }
         };
@@ -153,7 +150,6 @@ impl KsDevice {
                 Some(KsMaterial {
                     width_mm: mat.width_mm,
                     height_mm: mat.height_mm,
-                    remaining: mat.remaining.map(|r| r as i32).unwrap_or(-1),
                 })
             }
             Ok(None) => {
