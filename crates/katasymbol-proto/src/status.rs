@@ -1,4 +1,6 @@
-use crate::cmd::{CMD_INQUIRY_STA, CMD_RETURN_MAT, CMD_RD_DEV_NAME, CMD_READ_FWVER, CMD_READ_REV, MAGIC1, MAGIC2};
+use crate::cmd::{
+    CMD_INQUIRY_STA, CMD_RD_DEV_NAME, CMD_READ_FWVER, CMD_READ_REV, CMD_RETURN_MAT, MAGIC1, MAGIC2,
+};
 
 /// Parsed printer status from CMD_INQUIRY_STA response.
 #[derive(Debug, Clone, Default)]
@@ -184,7 +186,11 @@ pub fn parse_device_name(data: &[u8]) -> Option<String> {
     let name = String::from_utf8_lossy(&data[22..22 + data_len])
         .trim_end_matches('\0')
         .to_string();
-    if name.is_empty() { None } else { Some(name) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 /// Parse firmware version from CMD_READ_FWVER response.
@@ -209,7 +215,11 @@ pub fn parse_version(data: &[u8]) -> Option<String> {
     let ver = String::from_utf8_lossy(&data[22..25])
         .trim_end_matches('\0')
         .to_string();
-    if ver.is_empty() { None } else { Some(ver) }
+    if ver.is_empty() {
+        None
+    } else {
+        Some(ver)
+    }
 }
 
 /// Validate a response frame has correct magic and echoes the expected command.

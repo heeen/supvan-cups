@@ -123,7 +123,10 @@ fn cmd_material(addr: &str) {
 
     match printer.query_material() {
         Ok(Some(mat)) => {
-            println!("Label: {}mm x {}mm (type={}, gap={}mm)", mat.width_mm, mat.height_mm, mat.label_type, mat.gap_mm);
+            println!(
+                "Label: {}mm x {}mm (type={}, gap={}mm)",
+                mat.width_mm, mat.height_mm, mat.label_type, mat.gap_mm
+            );
             if let Some(remaining) = mat.remaining {
                 println!("Remaining: {} labels", remaining);
             }
@@ -165,7 +168,10 @@ fn cmd_test_print(addr: &str, density: u8) {
         }
     };
 
-    eprintln!("Printing test pattern on {}mm x {}mm label...", mat.width_mm, mat.height_mm);
+    eprintln!(
+        "Printing test pattern on {}mm x {}mm label...",
+        mat.width_mm, mat.height_mm
+    );
     if let Err(e) = printer.test_print(&mat, density) {
         eprintln!("Print failed: {e}");
         process::exit(1);

@@ -10,16 +10,16 @@ use crate::error::{Error, Result};
 pub fn compress_lzma(data: &[u8]) -> Result<Vec<u8>> {
     use xz2::stream::{LzmaOptions, Stream};
 
-    let mut opts = LzmaOptions::new_preset(6)
-        .map_err(|e| Error::Compression(format!("preset: {e}")))?;
+    let mut opts =
+        LzmaOptions::new_preset(6).map_err(|e| Error::Compression(format!("preset: {e}")))?;
     opts.dict_size(8192)
         .literal_context_bits(3)
         .literal_position_bits(0)
         .position_bits(2)
         .nice_len(128);
 
-    let stream = Stream::new_lzma_encoder(&opts)
-        .map_err(|e| Error::Compression(format!("encoder: {e}")))?;
+    let stream =
+        Stream::new_lzma_encoder(&opts).map_err(|e| Error::Compression(format!("encoder: {e}")))?;
 
     let mut compressed = Vec::with_capacity(data.len());
     let mut encoder = xz2::write::XzEncoder::new_stream(&mut compressed, stream);
@@ -48,12 +48,14 @@ pub fn compress_lzma(data: &[u8]) -> Result<Vec<u8>> {
 ///
 /// Takes a slice of 4096-byte print buffers, concatenates them, and compresses
 /// as a single LZMA stream. Returns (compressed_data, average_compressed_per_buffer).
-pub fn compress_buffers(buffers: &[[u8; 4096]]) -> Result<(Vec<u8>, usize)> {
+pub fn compress_buffers(
+    buffers: &[[u8; crate::buffer::PRINT_BUF_SIZE]],
+) -> Result<(Vec<u8>, usize)> {
     if buffers.is_empty() {
         return Err(Error::InvalidParam("no buffers to compress".into()));
     }
 
-    let mut concat = Vec::with_capacity(buffers.len() * 4096);
+    let mut concat = Vec::with_capacity(buffers.len() * crate::buffer::PRINT_BUF_SIZE);
     for buf in buffers {
         concat.extend_from_slice(buf);
     }
@@ -74,15 +76,15 @@ mod tests {
         let compressed = compress_lzma(&data).unwrap();
 
         // Check header
-        assert!(compressed.len() >= 13, "compressed too short: {}", compressed.len());
+        assert!(
+            compressed.len() >= 13,
+            "compressed too short: {}",
+            compressed.len()
+        );
         // Properties byte: lc=3, lp=0, pb=2 -> 0x5D
         assert_eq!(compressed[0], 0x5D, "wrong properties byte");
         // Dict size: 8192 LE
-        assert_eq!(
-            &compressed[1..5],
-            &8192u32.to_le_bytes(),
-            "wrong dict size"
-        );
+        assert_eq!(&compressed[1..5], &8192u32.to_le_bytes(), "wrong dict size");
         // Uncompressed size: 4096 LE
         assert_eq!(
             &compressed[5..13],

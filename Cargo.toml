@@ -2,7 +2,8 @@
 members = [
     "crates/katasymbol-proto",
     "crates/katasymbol-cli",
-    "crates/katasymbol-ffi",
+    "crates/pappl-sys",
+    "crates/katasymbol-app",
 ]
 resolver = "2"
 

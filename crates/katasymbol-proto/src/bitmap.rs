@@ -1,7 +1,9 @@
-/// T50 Pro: 8 dots/mm, max 48mm printhead.
-pub const DPI: u32 = 8;
-pub const MAX_WIDTH_MM: u32 = 48;
+/// T50 Pro: 8 dots/mm, 48mm printhead.
+pub const DOTS_PER_MM: u32 = 8;
 pub const PRINTHEAD_WIDTH_MM: u32 = 48;
+pub const PRINTHEAD_WIDTH_DOTS: u32 = PRINTHEAD_WIDTH_MM * DOTS_PER_MM;
+pub const PRINTHEAD_BYTES_PER_LINE: u32 = PRINTHEAD_WIDTH_DOTS / 8;
+pub const DEFAULT_MARGIN_DOTS: u16 = 8;
 
 /// Convert a row-major MSB-first 1bpp bitmap (standard raster format) into
 /// column-major LSB-first 1bpp format suitable for the printer.
@@ -18,11 +20,7 @@ pub const PRINTHEAD_WIDTH_MM: u32 = 48;
 /// This effectively rotates the image -90 degrees and repacks the bits.
 ///
 /// Returns `(output_data, output_cols, bytes_per_line)`.
-pub fn raster_to_column_major(
-    input: &[u8],
-    width: u32,
-    height: u32,
-) -> (Vec<u8>, u32, u32) {
+pub fn raster_to_column_major(input: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
     let in_bytes_per_row = width.div_ceil(8);
     let out_bytes_per_line = width.div_ceil(8); // printhead width packed
     let out_cols = height;
@@ -115,14 +113,14 @@ pub fn center_in_printhead(
 ///
 /// Returns (image_bytes, canvas_width_dots, height_dots, bytes_per_line).
 pub fn create_test_pattern(label_width_mm: u32, height_mm: u32) -> (Vec<u8>, u32, u32, u32) {
-    let canvas_width_dots = PRINTHEAD_WIDTH_MM * DPI; // 384
-    let height_dots = height_mm * DPI;
-    let bytes_per_line = canvas_width_dots / 8; // 48
-    let label_width_dots = label_width_mm * DPI;
+    let canvas_width_dots = PRINTHEAD_WIDTH_DOTS;
+    let height_dots = height_mm * DOTS_PER_MM;
+    let bytes_per_line = PRINTHEAD_BYTES_PER_LINE;
+    let label_width_dots = label_width_mm * DOTS_PER_MM;
     let x_offset = (canvas_width_dots - label_width_dots) / 2;
 
-    let margin_top: u32 = 8;
-    let margin_bottom: u32 = 8;
+    let margin_top = DEFAULT_MARGIN_DOTS as u32;
+    let margin_bottom = DEFAULT_MARGIN_DOTS as u32;
     let max_cols = (crate::buffer::MAX_BUF_DATA / bytes_per_line as usize) as u32;
 
     // Compute buffer regions
@@ -146,11 +144,7 @@ pub fn create_test_pattern(label_width_mm: u32, height_mm: u32) -> (Vec<u8>, u32
                 let lr = label_row as u32;
 
                 // Outer border (2px)
-                if lr < 2
-                    || lr >= label_width_dots - 2
-                    || col < 2
-                    || col >= height_dots - 2
-                {
+                if lr < 2 || lr >= label_width_dots - 2 || col < 2 || col >= height_dots - 2 {
                     pixel = true;
                 }
 
@@ -182,11 +176,7 @@ pub fn create_test_pattern(label_width_mm: u32, height_mm: u32) -> (Vec<u8>, u32
                         for d in 0..=i as u32 {
                             let dx = 10 + d * 12;
                             let dy: u32 = 10;
-                            if lr >= dx
-                                && lr < dx + 8
-                                && local_col >= dy
-                                && local_col < dy + 8
-                            {
+                            if lr >= dx && lr < dx + 8 && local_col >= dy && local_col < dy + 8 {
                                 pixel = true;
                             }
                         }
@@ -230,8 +220,8 @@ mod tests {
         let input = vec![0xFF; 2]; // 2 columns, 1 byte each
         let (output, bpl) = center_in_printhead(&input, 2, 8, 24);
         assert_eq!(bpl, 3); // 24/8 = 3 bytes per line
-        // 8 dots centered in 24 -> offset = 8 dots = 1 byte
-        // Col 0: byte 0 = 0x00, byte 1 = 0xFF, byte 2 = 0x00
+                            // 8 dots centered in 24 -> offset = 8 dots = 1 byte
+                            // Col 0: byte 0 = 0x00, byte 1 = 0xFF, byte 2 = 0x00
         assert_eq!(output[0], 0x00);
         assert_eq!(output[1], 0xFF);
         assert_eq!(output[2], 0x00);

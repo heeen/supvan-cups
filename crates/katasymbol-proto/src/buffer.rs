@@ -119,8 +119,7 @@ pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
 
     // Image data at offset 14
     let data_len = p.image_data.len().min(PRINT_BUF_SIZE - PRINT_BUF_HEADER);
-    buf[PRINT_BUF_HEADER..PRINT_BUF_HEADER + data_len]
-        .copy_from_slice(&p.image_data[..data_len]);
+    buf[PRINT_BUF_HEADER..PRINT_BUF_HEADER + data_len].copy_from_slice(&p.image_data[..data_len]);
 
     // Checksum: sum(buf[2..14]) + sum of bytes at each 256-byte boundary
     let data_end = (p.cols_in_buf as usize) * (p.per_line_byte as usize) + PRINT_BUF_HEADER;
@@ -235,7 +234,7 @@ mod tests {
         assert_eq!(buf[5], 0); // cols high
         assert_eq!(buf[8], 8); // margin top
         assert_eq!(buf[12], 4); // density
-        // Checksum should be non-zero (at least header bytes contribute)
+                                // Checksum should be non-zero (at least header bytes contribute)
         let chk = buf[0] as u16 | ((buf[1] as u16) << 8);
         assert!(chk > 0);
     }

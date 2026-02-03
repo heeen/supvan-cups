@@ -36,9 +36,7 @@ impl RfcommSocket {
     pub fn connect(addr: &str, channel: u8) -> Result<Self> {
         let bdaddr = parse_bdaddr(addr)?;
 
-        let fd = unsafe {
-            libc::socket(AF_BLUETOOTH, libc::SOCK_STREAM, BTPROTO_RFCOMM)
-        };
+        let fd = unsafe { libc::socket(AF_BLUETOOTH, libc::SOCK_STREAM, BTPROTO_RFCOMM) };
         if fd < 0 {
             return Err(Error::Io(std::io::Error::last_os_error()));
         }
@@ -58,7 +56,9 @@ impl RfcommSocket {
         };
         if ret < 0 {
             let err = std::io::Error::last_os_error();
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
             return Err(Error::Io(err));
         }
 
@@ -143,7 +143,11 @@ impl RfcommSocket {
     }
 
     /// Read response by polling.
-    pub fn read_response(&self, max_wait: Duration, poll_interval: Duration) -> Result<Option<Vec<u8>>> {
+    pub fn read_response(
+        &self,
+        max_wait: Duration,
+        poll_interval: Duration,
+    ) -> Result<Option<Vec<u8>>> {
         let mut response = Vec::new();
         let polls = (max_wait.as_millis() / poll_interval.as_millis().max(1)) as usize;
         let mut buf = [0u8; 512];
@@ -164,9 +168,8 @@ impl RfcommSocket {
         }
 
         for _ in 0..polls {
-            let n = unsafe {
-                libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0)
-            };
+            let n =
+                unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n > 0 {
                 response.extend_from_slice(&buf[..n as usize]);
                 // Brief extra wait for trailing bytes
@@ -217,7 +220,11 @@ impl RfcommSocket {
     }
 
     /// Send a 512-byte data frame as 4x128-byte chunks with 10ms delay.
-    pub fn send_data_frame(&self, frame: &[u8; 512], read_response: bool) -> Result<Option<Vec<u8>>> {
+    pub fn send_data_frame(
+        &self,
+        frame: &[u8; 512],
+        read_response: bool,
+    ) -> Result<Option<Vec<u8>>> {
         for i in 0..4 {
             let chunk = &frame[i * 128..(i + 1) * 128];
             std::thread::sleep(Duration::from_millis(10));
@@ -248,7 +255,9 @@ impl RfcommSocket {
 
 impl Drop for RfcommSocket {
     fn drop(&mut self) {
-        unsafe { libc::close(self.fd); }
+        unsafe {
+            libc::close(self.fd);
+        }
     }
 }
 

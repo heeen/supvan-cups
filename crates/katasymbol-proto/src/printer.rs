@@ -144,11 +144,7 @@ impl Printer {
     }
 
     /// Transfer a single compressed buffer: NEXT_ZIPPEDBULK -> data packets -> BUF_FULL.
-    pub fn transfer_compressed(
-        &self,
-        compressed: &[u8],
-        speed: u16,
-    ) -> Result<()> {
+    pub fn transfer_compressed(&self, compressed: &[u8], speed: u16) -> Result<()> {
         let num_packets = compressed.len().div_ceil(DATA_PAYLOAD_SIZE);
         log::info!(
             "transfer: {} bytes, {} packets, speed={}",
@@ -160,7 +156,9 @@ impl Printer {
         // CMD_NEXT_ZIPPEDBULK (0x5C) with block_size=512, block_count=num_packets
         let resp = self.send_cmd_start_trans(CMD_NEXT_ZIPPEDBULK, 512, num_packets as u16)?;
         if resp.is_none() {
-            return Err(Error::InvalidResponse("no response to NEXT_ZIPPEDBULK".into()));
+            return Err(Error::InvalidResponse(
+                "no response to NEXT_ZIPPEDBULK".into(),
+            ));
         }
 
         // Send data packets
@@ -190,18 +188,15 @@ impl Printer {
     /// 4. Wait printing station
     /// 5. Wait buffer ready + transfer
     /// 6. Wait completion
-    pub fn print_compressed(
-        &self,
-        compressed: &[u8],
-        speed: u16,
-    ) -> Result<()> {
+    pub fn print_compressed(&self, compressed: &[u8], speed: u16) -> Result<()> {
         // Step 1: Check device
         if !self.check_device()? {
             return Err(Error::InvalidResponse("CHECK_DEVICE failed".into()));
         }
 
         // Step 2: Wait ready
-        let status = self.wait_ready(60)?
+        let status = self
+            .wait_ready(60)?
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for device ready".into()))?;
         if status.has_error() {
             return Err(Error::InvalidResponse(format!(
@@ -218,7 +213,8 @@ impl Printer {
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for printing station".into()))?;
 
         // Step 5: Wait buffer + transfer
-        let buf_status = self.wait_buffer_ready(200)?
+        let buf_status = self
+            .wait_buffer_ready(200)?
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for buffer space".into()))?;
         if buf_status.has_error() {
             self.stop_print()?;
@@ -250,8 +246,12 @@ impl Printer {
         use crate::buffer::split_into_buffers;
         use crate::compress::compress_buffers;
 
-        let label_width_mm = (mat.width_mm as u32).min(crate::bitmap::MAX_WIDTH_MM);
-        let height_mm = if mat.height_mm == 0 { 25 } else { mat.height_mm as u32 };
+        let label_width_mm = (mat.width_mm as u32).min(crate::bitmap::PRINTHEAD_WIDTH_MM);
+        let height_mm = if mat.height_mm == 0 {
+            25
+        } else {
+            mat.height_mm as u32
+        };
 
         log::info!(
             "test print: {}mm x {}mm, density={}",

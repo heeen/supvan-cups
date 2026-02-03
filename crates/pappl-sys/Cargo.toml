@@ -1,0 +1,9 @@
+[package]
+name = "pappl-sys"
+version.workspace = true
+edition.workspace = true
+links = "pappl"
+
+[build-dependencies]
+bindgen = "0.71"
+pkg-config = "0.3"
