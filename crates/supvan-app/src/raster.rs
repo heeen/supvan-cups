@@ -9,7 +9,7 @@ use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
 use crate::job::KsJob;
 use crate::printer_device::KsDevice;
-
+use crate::util::copy_to_c_buf;
 
 /// Helper: get printer darkness setting (0-100).
 unsafe fn get_darkness(job: *mut pappl_job_t) -> i32 {
@@ -174,6 +174,7 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
             return true; // non-fatal
         }
     };
+    let low_battery = dev.battery_low();
 
     papplPrinterCloseDevice(printer);
 
@@ -189,6 +190,28 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
     fill_media_col(&mut ready, best);
 
     papplPrinterSetReadyMedia(printer, 1, &mut ready);
+
+    // Report supplies: labels remaining + battery
+    let mut supplies: [pappl_supply_t; 2] = Default::default();
+    let mut num_supplies = 0;
+
+    if mat.remaining >= 0 {
+        copy_to_c_buf(&mut supplies[num_supplies].description, b"Labels");
+        supplies[num_supplies].color = pappl_supply_color_e_PAPPL_SUPPLY_COLOR_NO_COLOR;
+        supplies[num_supplies].type_ = pappl_supply_type_e_PAPPL_SUPPLY_TYPE_OTHER;
+        supplies[num_supplies].is_consumed = true;
+        supplies[num_supplies].level = (mat.remaining as i32).min(100);
+        num_supplies += 1;
+    }
+
+    copy_to_c_buf(&mut supplies[num_supplies].description, b"Battery");
+    supplies[num_supplies].color = pappl_supply_color_e_PAPPL_SUPPLY_COLOR_NO_COLOR;
+    supplies[num_supplies].type_ = pappl_supply_type_e_PAPPL_SUPPLY_TYPE_OTHER;
+    supplies[num_supplies].is_consumed = false;
+    supplies[num_supplies].level = if low_battery { 10 } else { 100 };
+    num_supplies += 1;
+
+    papplPrinterSetSupplies(printer, num_supplies as i32, supplies.as_mut_ptr());
 
     true
 }

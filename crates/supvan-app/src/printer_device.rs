@@ -17,6 +17,7 @@ pub struct KsDevice {
 pub struct KsMaterial {
     pub width_mm: u8,
     pub height_mm: u8,
+    pub remaining: i32,
 }
 
 // PAPPL pappl_preason_t bit flags.
@@ -132,6 +133,7 @@ impl KsDevice {
                 return Some(KsMaterial {
                     width_mm: 40,
                     height_mm: 30,
+                    remaining: -1,
                 });
             }
         };
@@ -150,6 +152,7 @@ impl KsDevice {
                 Some(KsMaterial {
                     width_mm: mat.width_mm,
                     height_mm: mat.height_mm,
+                    remaining: mat.remaining.map(|r| r as i32).unwrap_or(-1),
                 })
             }
             Ok(None) => {
@@ -160,6 +163,20 @@ impl KsDevice {
                 log::error!("KsDevice::material: {e}");
                 None
             }
+        }
+    }
+
+    /// Query low-battery flag from printer status.
+    ///
+    /// Returns `false` in mock mode or on query failure.
+    pub fn battery_low(&self) -> bool {
+        let printer = match &self.printer {
+            Some(p) => p,
+            None => return false,
+        };
+        match printer.query_status() {
+            Ok(Some(s)) => s.low_battery,
+            _ => false,
         }
     }
 
