@@ -14,5 +14,3 @@ __pycache__/
 *.rar
 *.exe
 
-# PAPPL build output
-/pappl/katasymbol-printer-app

@@ -1,10 +1,10 @@
 [package]
-name = "katasymbol-cli"
+name = "supvan-cli"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-katasymbol-proto.workspace = true
+supvan-proto.workspace = true
 log.workspace = true
 env_logger.workspace = true
 clap = { version = "4", features = ["derive"] }

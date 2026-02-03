@@ -58,7 +58,7 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
     };
 
     // Create PGM accumulator if dump dir is set and input is 8bpp
-    if opts.header.cupsBitsPerPixel == 8 && std::env::var("KATASYMBOL_DUMP_DIR").is_ok() {
+    if opts.header.cupsBitsPerPixel == 8 && std::env::var("SUPVAN_DUMP_DIR").is_ok() {
         ks_job.pgm_acc = Some(PgmAccumulator::new(w, h));
     }
 

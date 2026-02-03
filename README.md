@@ -1,7 +1,7 @@
-# Katasymbol M50 Pro Printer Driver
+# Supvan T50 Pro Printer Driver
 
-Linux printer driver for the Katasymbol M50 Pro thermal label printer
-(also compatible with Supvan T50 series). Provides an IPP Everywhere
+Linux printer driver for the Supvan T50 Pro thermal label printer
+(also compatible with Katasymbol M50 Pro). Provides an IPP Everywhere
 printer application via [PAPPL](https://www.msweet.org/pappl/) and a
 command-line diagnostic tool.
 
@@ -10,8 +10,8 @@ app (v1.4.20).
 
 ## Compatible Devices
 
-- Katasymbol M50 Pro
 - Supvan T50 Plus / T50 series
+- Katasymbol M50 Pro
 - Other devices advertising Bluetooth names containing T50, T0117,
   Supvan, or Katasymbol
 
@@ -19,10 +19,10 @@ app (v1.4.20).
 
 | Crate | Description |
 |-------|-------------|
-| `katasymbol-proto` | Printer protocol: RFCOMM transport, commands, status parsing, bitmap transforms, LZMA compression |
+| `supvan-proto` | Printer protocol: RFCOMM transport, commands, status parsing, bitmap transforms, LZMA compression |
 | `pappl-sys` | Bindgen FFI bindings for libpappl and libcups |
-| `katasymbol-app` | PAPPL printer application binary (`katasymbol-printer-app`) |
-| `katasymbol-cli` | Command-line diagnostic tool (`katasymbol-cli`) |
+| `supvan-app` | PAPPL printer application binary (`supvan-printer-app`) |
+| `supvan-cli` | Command-line diagnostic tool (`supvan-cli`) |
 
 ## Prerequisites
 
@@ -46,8 +46,8 @@ cargo build --release
 
 Binaries:
 
-- `target/release/katasymbol-printer-app`
-- `target/release/katasymbol-cli`
+- `target/release/supvan-printer-app`
+- `target/release/supvan-cli`
 
 ## Usage
 
@@ -59,7 +59,7 @@ printers that any Linux application can print to.
 
 ```sh
 # Start the server
-./target/release/katasymbol-printer-app server
+./target/release/supvan-printer-app server
 
 # Web interface at http://localhost:8631/
 ```
@@ -69,16 +69,16 @@ Other PAPPL subcommands are available (`devices`, `printers`, `status`,
 
 #### Systemd User Service
 
-Create `~/.config/systemd/user/katasymbol-printer-app.service`:
+Create `~/.config/systemd/user/supvan-printer-app.service`:
 
 ```ini
 [Unit]
-Description=Katasymbol M50 Pro Printer Application
+Description=Supvan T50 Pro Printer Application
 After=bluetooth.target dbus.socket
 
 [Service]
 Type=simple
-ExecStart=/path/to/katasymbol-printer-app server
+ExecStart=/path/to/supvan-printer-app server
 Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
@@ -91,7 +91,7 @@ Then:
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now katasymbol-printer-app
+systemctl --user enable --now supvan-printer-app
 ```
 
 ### CLI Tool
@@ -100,42 +100,42 @@ Direct printer interaction over Bluetooth for diagnostics and testing.
 
 ```sh
 # Discover nearby printers
-katasymbol-cli discover
+supvan-cli discover
 
 # Probe a printer (status, material, firmware)
-katasymbol-cli probe AA:BB:CC:DD:EE:FF
+supvan-cli probe AA:BB:CC:DD:EE:FF
 
 # Query loaded label info
-katasymbol-cli material AA:BB:CC:DD:EE:FF
+supvan-cli material AA:BB:CC:DD:EE:FF
 
 # Send a test print
-katasymbol-cli test-print AA:BB:CC:DD:EE:FF --density 4
+supvan-cli test-print AA:BB:CC:DD:EE:FF --density 4
 ```
 
 ## Debug Dumps
 
-Set `KATASYMBOL_DUMP_DIR` to capture raster images at each pipeline stage:
+Set `SUPVAN_DUMP_DIR` to capture raster images at each pipeline stage:
 
 ```sh
-export KATASYMBOL_DUMP_DIR=~/.local/state/katasymbol-dumps
-mkdir -p "$KATASYMBOL_DUMP_DIR"
+export SUPVAN_DUMP_DIR=~/.local/state/supvan-dumps
+mkdir -p "$SUPVAN_DUMP_DIR"
 ```
 
 Each print job produces:
 
 | File | Format | Contents |
 |------|--------|----------|
-| `katasymbol_NNNN_pre.pgm` | PGM P5 (8bpp) | Pre-dither grayscale input from PAPPL |
-| `katasymbol_NNNN.pbm` | PBM P4 (1bpp) | Post-dither label-sized bitmap |
-| `katasymbol_NNNN_printhead.pbm` | PBM P4 (1bpp) | Final 384-dot-wide printhead image |
+| `supvan_NNNN_pre.pgm` | PGM P5 (8bpp) | Pre-dither grayscale input from PAPPL |
+| `supvan_NNNN.pbm` | PBM P4 (1bpp) | Post-dither label-sized bitmap |
+| `supvan_NNNN_printhead.pbm` | PBM P4 (1bpp) | Final 384-dot-wide printhead image |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `RUST_LOG` | Log level (`debug`, `info`, `warn`, `error`) |
-| `KATASYMBOL_DUMP_DIR` | Directory for debug image dumps |
-| `KATASYMBOL_MOCK` | Set to `1` to run without a real printer |
+| `SUPVAN_DUMP_DIR` | Directory for debug image dumps |
+| `SUPVAN_MOCK` | Set to `1` to run without a real printer |
 | `XDG_STATE_HOME` | Override state file location (default: `~/.local/state`) |
 
 ## License

@@ -267,38 +267,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "katasymbol-app"
-version = "0.1.0"
-dependencies = [
- "dbus",
- "env_logger",
- "katasymbol-proto",
- "libc",
- "log",
- "pappl-sys",
-]
-
-[[package]]
-name = "katasymbol-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "env_logger",
- "katasymbol-proto",
- "log",
-]
-
-[[package]]
-name = "katasymbol-proto"
-version = "0.1.0"
-dependencies = [
- "libc",
- "log",
- "thiserror",
- "xz2",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -491,6 +459,38 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "supvan-app"
+version = "0.1.0"
+dependencies = [
+ "dbus",
+ "env_logger",
+ "libc",
+ "log",
+ "pappl-sys",
+ "supvan-proto",
+]
+
+[[package]]
+name = "supvan-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "log",
+ "supvan-proto",
+]
+
+[[package]]
+name = "supvan-proto"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "log",
+ "thiserror",
+ "xz2",
+]
 
 [[package]]
 name = "syn"

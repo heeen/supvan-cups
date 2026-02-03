@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 static DUMP_SEQ: AtomicU32 = AtomicU32::new(0);
 
 fn next_dump_path(suffix: &str) -> Option<String> {
-    let dir = std::env::var("KATASYMBOL_DUMP_DIR")
+    let dir = std::env::var("SUPVAN_DUMP_DIR")
         .ok()
         .filter(|d| !d.is_empty())?;
     let seq = DUMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    Some(format!("{dir}/katasymbol_{seq:04}{suffix}"))
+    Some(format!("{dir}/supvan_{seq:04}{suffix}"))
 }
 
 fn write_dump(path: &str, buf: &[u8], label: &str) {
@@ -18,7 +18,7 @@ fn write_dump(path: &str, buf: &[u8], label: &str) {
     }
 }
 
-/// If `KATASYMBOL_DUMP_DIR` is set, write the raster as PBM P4.
+/// If `SUPVAN_DUMP_DIR` is set, write the raster as PBM P4.
 ///
 /// The raster is already row-major 1bpp MSB-first, which is exactly PBM P4 format.
 pub fn dump_pbm(raster: &[u8], width: u32, height: u32, bytes_per_line: u32) {
@@ -109,7 +109,7 @@ impl PgmAccumulator {
         self.lines_received += 1;
     }
 
-    /// Flush accumulated data as PGM P5 to `$KATASYMBOL_DUMP_DIR/katasymbol_NNNN_pre.pgm`.
+    /// Flush accumulated data as PGM P5 to `$SUPVAN_DUMP_DIR/supvan_NNNN_pre.pgm`.
     pub fn flush(&self) {
         let path = match next_dump_path("_pre.pgm") {
             Some(p) => p,

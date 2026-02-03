@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/katasymbol-proto",
-    "crates/katasymbol-cli",
+    "crates/supvan-proto",
+    "crates/supvan-cli",
     "crates/pappl-sys",
-    "crates/katasymbol-app",
+    "crates/supvan-app",
 ]
 resolver = "2"
 
@@ -13,7 +13,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-katasymbol-proto = { path = "crates/katasymbol-proto" }
+supvan-proto = { path = "crates/supvan-proto" }
 log = "0.4"
 env_logger = "0.11"
 thiserror = "2"

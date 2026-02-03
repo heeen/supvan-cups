@@ -8,8 +8,8 @@ use pappl_sys::*;
 use crate::device;
 use crate::driver;
 
-/// State file path: $XDG_STATE_HOME/katasymbol-printer-app.state or
-/// ~/.local/state/katasymbol-printer-app.state.
+/// State file path: $XDG_STATE_HOME/supvan-printer-app.state or
+/// ~/.local/state/supvan-printer-app.state.
 static STATE_PATH: OnceLock<CString> = OnceLock::new();
 
 fn build_state_path() -> CString {
@@ -17,7 +17,7 @@ fn build_state_path() -> CString {
         .ok()
         .filter(|s| !s.is_empty());
     let path = if let Some(dir) = dir {
-        format!("{dir}/katasymbol-printer-app.state")
+        format!("{dir}/supvan-printer-app.state")
     } else {
         let home = std::env::var("HOME").ok().unwrap_or_else(|| {
             // Fallback to getpwuid
@@ -33,7 +33,7 @@ fn build_state_path() -> CString {
                 }
             }
         });
-        format!("{home}/.local/state/katasymbol-printer-app.state")
+        format!("{home}/.local/state/supvan-printer-app.state")
     };
     CString::new(path).expect("state path contains NUL")
 }
@@ -56,7 +56,7 @@ pub unsafe extern "C" fn ks_system_cb(
 ) -> *mut pappl_system_t {
     let system = papplSystemCreate(
         pappl_soptions_e_PAPPL_SOPTIONS_MULTI_QUEUE | pappl_soptions_e_PAPPL_SOPTIONS_WEB_INTERFACE,
-        c"katasymbol-printer-app".as_ptr(),
+        c"supvan-printer-app".as_ptr(),
         8631,
         std::ptr::null(), // subtypes
         std::ptr::null(), // spooldir
@@ -73,10 +73,10 @@ pub unsafe extern "C" fn ks_system_cb(
     // Bind TCP listener
     papplSystemAddListeners(system, std::ptr::null());
 
-    papplSystemSetFooterHTML(system, c"Katasymbol M50 Pro Printer Application".as_ptr());
+    papplSystemSetFooterHTML(system, c"Supvan T50 Pro Printer Application".as_ptr());
 
     let mut version: pappl_version_t = Default::default();
-    crate::util::copy_to_c_buf(&mut version.name, b"katasymbol-printer-app");
+    crate::util::copy_to_c_buf(&mut version.name, b"supvan-printer-app");
     crate::util::copy_to_c_buf(&mut version.sversion, b"1.0.0");
     version.version = [1, 0, 0, 0];
     papplSystemSetVersions(system, 1, &mut version);
@@ -97,8 +97,8 @@ pub unsafe extern "C" fn ks_system_cb(
     // Register printer driver
     let mut drv = pappl_pr_driver_t {
         name: driver::DRIVER_NAME.as_ptr(),
-        description: c"Katasymbol M50 Pro".as_ptr(),
-        device_id: c"MFG:Katasymbol;MDL:M50 Pro;CMD:KATASYMBOL;".as_ptr(),
+        description: c"Supvan T50 Pro".as_ptr(),
+        device_id: c"MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;".as_ptr(),
         extension: std::ptr::null_mut(),
     };
     papplSystemSetPrinterDrivers(

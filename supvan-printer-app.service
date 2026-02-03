@@ -1,10 +1,10 @@
 [Unit]
-Description=Katasymbol M50 Pro Printer Application
+Description=Supvan T50 Pro Printer Application
 After=bluetooth.target dbus.socket
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/katasymbol-printer-app server
+ExecStart=/usr/bin/supvan-printer-app server
 Restart=on-failure
 RestartSec=5
 

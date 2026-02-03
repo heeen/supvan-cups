@@ -1,12 +1,12 @@
 use clap::{Parser, Subcommand};
-use katasymbol_proto::printer::Printer;
-use katasymbol_proto::rfcomm::RfcommSocket;
 use std::process;
+use supvan_proto::printer::Printer;
+use supvan_proto::rfcomm::RfcommSocket;
 
 const DEFAULT_BT_ADDR: &str = "A4:93:40:A0:87:57";
 
 #[derive(Parser)]
-#[command(name = "katasymbol-cli", about = "Katasymbol M50 Pro printer tool")]
+#[command(name = "supvan-cli", about = "Supvan T50 Pro printer tool")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -150,7 +150,7 @@ fn cmd_test_print(addr: &str, density: u8) {
         Ok(Some(m)) => m,
         Ok(None) => {
             eprintln!("No material info, using defaults (48mm x 25mm)");
-            katasymbol_proto::status::MaterialInfo {
+            supvan_proto::status::MaterialInfo {
                 uuid: String::new(),
                 code: String::new(),
                 sn: 0,

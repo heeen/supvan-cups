@@ -10,9 +10,9 @@ pub fn copy_to_c_buf(dst: &mut [c_char], src: &[u8]) {
     dst[copy_len] = 0;
 }
 
-/// Return true if KATASYMBOL_MOCK=1.
+/// Return true if SUPVAN_MOCK=1.
 pub fn is_mock_mode() -> bool {
-    std::env::var("KATASYMBOL_MOCK")
+    std::env::var("SUPVAN_MOCK")
         .map(|v| v == "1")
         .unwrap_or(false)
 }

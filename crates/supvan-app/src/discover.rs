@@ -1,4 +1,4 @@
-//! BlueZ D-Bus discovery for Katasymbol printers.
+//! BlueZ D-Bus discovery for Supvan printers.
 //!
 //! 1. Connect to system D-Bus, find adapter
 //! 2. Run a 4-second active BT Classic scan
@@ -137,7 +137,7 @@ fn auto_pair_device(conn: &Connection, path: &dbus::Path<'_>, addr: &str) {
     }
 }
 
-/// Discover Katasymbol printers via BlueZ D-Bus.
+/// Discover Supvan printers via BlueZ D-Bus.
 ///
 /// For each found device, calls `cb(device_info, device_uri, device_id)`.
 /// Return `false` from the callback to stop enumeration.
@@ -250,9 +250,9 @@ where
 
         log::info!("discover: reporting {name} ({address})");
 
-        let device_info = format!("Katasymbol M50 Pro {name}");
+        let device_info = format!("Supvan T50 Pro {name}");
         let device_uri = format!("btrfcomm://bt/{address}");
-        let device_id = "MFG:Katasymbol;MDL:M50 Pro;CMD:KATASYMBOL;";
+        let device_id = "MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;";
 
         if !cb(&device_info, &device_uri, device_id) {
             break;

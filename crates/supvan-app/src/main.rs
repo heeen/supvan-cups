@@ -16,8 +16,8 @@ fn main() {
 
     let mut drv = pappl_pr_driver_t {
         name: driver::DRIVER_NAME.as_ptr(),
-        description: c"Katasymbol M50 Pro".as_ptr(),
-        device_id: c"MFG:Katasymbol;MDL:M50 Pro;CMD:KATASYMBOL;".as_ptr(),
+        description: c"Supvan T50 Pro".as_ptr(),
+        device_id: c"MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;".as_ptr(),
         extension: std::ptr::null_mut(),
     };
 
@@ -35,7 +35,7 @@ fn main() {
             argc,
             argv.as_mut_ptr(),
             c"1.0.0".as_ptr(),
-            c"Katasymbol M50 Pro Printer Application".as_ptr(),
+            c"Supvan T50 Pro Printer Application".as_ptr(),
             1, // num_drivers
             &mut drv,
             Some(driver::ks_autoadd_cb),

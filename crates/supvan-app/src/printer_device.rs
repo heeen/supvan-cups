@@ -1,8 +1,8 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use katasymbol_proto::printer::Printer;
-use katasymbol_proto::rfcomm::RfcommSocket;
+use supvan_proto::printer::Printer;
+use supvan_proto::rfcomm::RfcommSocket;
 
 use crate::util::is_mock_mode;
 
@@ -32,7 +32,7 @@ pub const PAPPL_PREASON_MEDIA_NEEDED: u32 = 0x0400;
 impl KsDevice {
     /// Open an RFCOMM connection to the printer at `addr`.
     ///
-    /// If `KATASYMBOL_MOCK=1`, returns a mock device with no Bluetooth connection.
+    /// If `SUPVAN_MOCK=1`, returns a mock device with no Bluetooth connection.
     pub fn open(addr: &str) -> Option<Box<Self>> {
         if is_mock_mode() {
             log::info!("KsDevice::open: MOCK mode — skipping BT connect to {addr}");

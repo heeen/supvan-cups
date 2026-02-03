@@ -8,7 +8,7 @@ use crate::dither;
 use crate::raster;
 use crate::util::copy_to_c_buf;
 
-pub static DRIVER_NAME: &std::ffi::CStr = c"katasymbol_m50pro";
+pub static DRIVER_NAME: &std::ffi::CStr = c"supvan_t50pro";
 
 const MAX_PAPPL_MEDIA: usize = 256;
 
@@ -101,7 +101,7 @@ pub unsafe extern "C" fn ks_driver_cb(
     let d = &mut *data;
 
     // Make and model
-    copy_to_c_buf(&mut d.make_and_model, b"Katasymbol M50 Pro");
+    copy_to_c_buf(&mut d.make_and_model, b"Supvan T50 Pro");
 
     // Format: PWG raster
     d.format = c"application/vnd.cups-raster".as_ptr();

@@ -1,11 +1,11 @@
 use std::sync::atomic::Ordering;
 
-use katasymbol_proto::bitmap::{
+use supvan_proto::bitmap::{
     center_in_printhead, raster_to_column_major, DEFAULT_MARGIN_DOTS, PRINTHEAD_WIDTH_DOTS,
 };
-use katasymbol_proto::buffer::split_into_buffers;
-use katasymbol_proto::compress::compress_buffers;
-use katasymbol_proto::speed::calc_speed;
+use supvan_proto::buffer::split_into_buffers;
+use supvan_proto::compress::compress_buffers;
+use supvan_proto::speed::calc_speed;
 
 use crate::dump::{dump_pbm, dump_printhead_pbm, PgmAccumulator};
 use crate::printer_device::KsDevice;
@@ -18,7 +18,7 @@ pub struct KsJob {
     pub raster_data: Vec<u8>,
     pub lines_received: u32,
     pub density: u8,
-    /// Pre-dither PGM accumulator (only when KATASYMBOL_DUMP_DIR is set and input is 8bpp).
+    /// Pre-dither PGM accumulator (only when SUPVAN_DUMP_DIR is set and input is 8bpp).
     pub pgm_acc: Option<PgmAccumulator>,
 }
 

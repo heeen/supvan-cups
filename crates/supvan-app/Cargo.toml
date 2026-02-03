@@ -1,14 +1,14 @@
 [package]
-name = "katasymbol-app"
+name = "supvan-app"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "katasymbol-printer-app"
+name = "supvan-printer-app"
 path = "src/main.rs"
 
 [dependencies]
-katasymbol-proto = { workspace = true }
+supvan-proto = { workspace = true }
 pappl-sys = { path = "../pappl-sys" }
 log = { workspace = true }
 env_logger = { workspace = true }
