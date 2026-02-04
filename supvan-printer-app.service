@@ -5,6 +5,7 @@ After=bluetooth.target dbus.socket
 [Service]
 Type=simple
 ExecStart=/usr/bin/supvan-printer-app server
+ExecStopPost=/usr/lib/supvan-printer-app/cups-cleanup.sh
 Restart=on-failure
 RestartSec=5
 
