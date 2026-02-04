@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 use std::process;
+use supvan_proto::bt_transport::BtTransport;
+use supvan_proto::hidraw::HidrawDevice;
 use supvan_proto::printer::Printer;
 use supvan_proto::rfcomm::RfcommSocket;
+use supvan_proto::usb_transport::UsbHidTransport;
 
 const DEFAULT_BT_ADDR: &str = "A4:93:40:A0:87:57";
 
@@ -16,21 +19,21 @@ struct Cli {
 enum Command {
     /// Probe printer: check device, status, material, version info
     Probe {
-        /// Bluetooth address (XX:XX:XX:XX:XX:XX)
+        /// Bluetooth address or /dev/hidrawN path
         #[arg(default_value = DEFAULT_BT_ADDR)]
-        addr: String,
+        target: String,
     },
     /// Query and print label material info
     Material {
-        /// Bluetooth address (XX:XX:XX:XX:XX:XX)
+        /// Bluetooth address or /dev/hidrawN path
         #[arg(default_value = DEFAULT_BT_ADDR)]
-        addr: String,
+        target: String,
     },
     /// Send a test print pattern
     TestPrint {
-        /// Bluetooth address (XX:XX:XX:XX:XX:XX)
+        /// Bluetooth address or /dev/hidrawN path
         #[arg(default_value = DEFAULT_BT_ADDR)]
-        addr: String,
+        target: String,
         /// Print density (0-15)
         #[arg(short, long, default_value_t = 4)]
         density: u8,
@@ -39,19 +42,29 @@ enum Command {
     Discover,
 }
 
-fn connect(addr: &str) -> Printer {
-    eprintln!("Connecting to {addr}...");
-    let sock = RfcommSocket::connect_default(addr).unwrap_or_else(|e| {
-        eprintln!("Connection failed: {e}");
-        eprintln!("Is the printer on and paired? bluetoothctl info {addr}");
-        process::exit(1);
-    });
-    eprintln!("Connected.");
-    Printer::new(sock)
+fn connect(target: &str) -> Printer {
+    if target.starts_with("/dev/hidraw") {
+        eprintln!("Opening USB HID {target}...");
+        let dev = HidrawDevice::open(target).unwrap_or_else(|e| {
+            eprintln!("Failed to open {target}: {e}");
+            process::exit(1);
+        });
+        eprintln!("Connected (USB HID).");
+        Printer::new(Box::new(UsbHidTransport::new(dev)))
+    } else {
+        eprintln!("Connecting to {target} (Bluetooth)...");
+        let sock = RfcommSocket::connect_default(target).unwrap_or_else(|e| {
+            eprintln!("Connection failed: {e}");
+            eprintln!("Is the printer on and paired? bluetoothctl info {target}");
+            process::exit(1);
+        });
+        eprintln!("Connected (Bluetooth).");
+        Printer::new(Box::new(BtTransport::new(sock)))
+    }
 }
 
-fn cmd_probe(addr: &str) {
-    let printer = connect(addr);
+fn cmd_probe(target: &str) {
+    let printer = connect(target);
 
     // Check device
     match printer.check_device() {
@@ -113,8 +126,8 @@ fn cmd_probe(addr: &str) {
     }
 }
 
-fn cmd_material(addr: &str) {
-    let printer = connect(addr);
+fn cmd_material(target: &str) {
+    let printer = connect(target);
 
     if !printer.check_device().unwrap_or(false) {
         eprintln!("Device not responding");
@@ -142,8 +155,8 @@ fn cmd_material(addr: &str) {
     }
 }
 
-fn cmd_test_print(addr: &str, density: u8) {
-    let printer = connect(addr);
+fn cmd_test_print(target: &str, density: u8) {
+    let printer = connect(target);
 
     // Query material to get label dimensions
     let mat = match printer.query_material() {
@@ -192,9 +205,9 @@ fn main() {
 
     let cli = Cli::parse();
     match cli.command {
-        Command::Probe { addr } => cmd_probe(&addr),
-        Command::Material { addr } => cmd_material(&addr),
-        Command::TestPrint { addr, density } => cmd_test_print(&addr, density),
+        Command::Probe { target } => cmd_probe(&target),
+        Command::Material { target } => cmd_material(&target),
+        Command::TestPrint { target, density } => cmd_test_print(&target, density),
         Command::Discover => cmd_discover(),
     }
 }

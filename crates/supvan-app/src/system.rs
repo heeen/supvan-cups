@@ -94,6 +94,19 @@ pub unsafe extern "C" fn ks_system_cb(
         None, // id_cb
     );
 
+    // Register usbhid:// device scheme
+    papplDeviceAddScheme(
+        c"usbhid".as_ptr(),
+        pappl_devtype_e_PAPPL_DEVTYPE_CUSTOM_LOCAL,
+        Some(device::usb_list_cb),
+        Some(device::usb_open_cb),
+        Some(device::usb_close_cb),
+        Some(device::usb_read_cb),
+        Some(device::usb_write_cb),
+        Some(device::usb_status_cb),
+        None, // id_cb
+    );
+
     // Register printer driver
     let mut drv = pappl_pr_driver_t {
         name: driver::DRIVER_NAME.as_ptr(),

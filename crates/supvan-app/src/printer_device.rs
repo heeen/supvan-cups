@@ -1,8 +1,12 @@
 use std::ffi::c_void;
+use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use supvan_proto::bt_transport::BtTransport;
+use supvan_proto::hidraw::HidrawDevice;
 use supvan_proto::printer::Printer;
 use supvan_proto::rfcomm::RfcommSocket;
+use supvan_proto::usb_transport::UsbHidTransport;
 
 use crate::util::is_mock_mode;
 
@@ -11,6 +15,12 @@ pub struct KsDevice {
     pub printer: Option<Printer>,
     /// Guards status queries during active raster transfer.
     pub printing: AtomicBool,
+    /// BT address for battery provider (e.g. "AA:BB:CC:DD:EE:FF"), or hidraw path.
+    pub addr: Option<String>,
+    /// Cached raw fd for PAPPL read/write callbacks.
+    transport_fd: Option<RawFd>,
+    /// true = socket I/O (recv/send), false = file I/O (read/write).
+    use_socket_io: bool,
 }
 
 /// Material/label info returned by the printer.
@@ -29,15 +39,18 @@ pub const PAPPL_PREASON_MEDIA_JAM: u32 = 0x0100;
 pub const PAPPL_PREASON_MEDIA_NEEDED: u32 = 0x0400;
 
 impl KsDevice {
-    /// Open an RFCOMM connection to the printer at `addr`.
+    /// Open a Bluetooth RFCOMM connection to the printer at `addr`.
     ///
-    /// If `SUPVAN_MOCK=1`, returns a mock device with no Bluetooth connection.
+    /// If `SUPVAN_MOCK=1`, returns a mock device with no connection.
     pub fn open(addr: &str) -> Option<Box<Self>> {
         if is_mock_mode() {
             log::info!("KsDevice::open: MOCK mode — skipping BT connect to {addr}");
             return Some(Box::new(KsDevice {
                 printer: None,
                 printing: AtomicBool::new(false),
+                addr: Some(addr.to_string()),
+                transport_fd: None,
+                use_socket_io: true,
             }));
         }
 
@@ -50,35 +63,86 @@ impl KsDevice {
             }
         };
 
+        let fd = sock.raw_fd();
+        let transport = BtTransport::new(sock);
+        let printer = Printer::new(Box::new(transport));
+
         log::debug!("KsDevice::open: connected to {addr}");
         Some(Box::new(KsDevice {
-            printer: Some(Printer::new(sock)),
+            printer: Some(printer),
             printing: AtomicBool::new(false),
+            addr: Some(addr.to_string()),
+            transport_fd: Some(fd),
+            use_socket_io: true,
         }))
     }
 
-    /// Read raw bytes from the RFCOMM socket. Returns bytes read, or -1 on error.
-    ///
-    /// In mock mode, returns 0 (EOF).
-    pub fn read(&self, buf: *mut u8, len: usize) -> isize {
-        let printer = match &self.printer {
-            Some(p) => p,
-            None => return 0,
+    /// Open a USB HID connection to the printer at `hidraw_path` (e.g. "/dev/hidraw7").
+    pub fn open_usb(hidraw_path: &str) -> Option<Box<Self>> {
+        if is_mock_mode() {
+            log::info!("KsDevice::open_usb: MOCK mode — skipping USB open to {hidraw_path}");
+            return Some(Box::new(KsDevice {
+                printer: None,
+                printing: AtomicBool::new(false),
+                addr: Some(hidraw_path.to_string()),
+                transport_fd: None,
+                use_socket_io: false,
+            }));
+        }
+
+        log::info!("KsDevice::open_usb: opening {hidraw_path}");
+        let dev = match HidrawDevice::open(hidraw_path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!("KsDevice::open_usb: hidraw open failed: {e}");
+                return None;
+            }
         };
-        let fd = printer.raw_fd();
-        unsafe { libc::recv(fd, buf as *mut c_void, len, 0) }
+
+        let fd = dev.raw_fd();
+        let transport = UsbHidTransport::new(dev);
+        let printer = Printer::new(Box::new(transport));
+
+        log::debug!("KsDevice::open_usb: opened {hidraw_path}");
+        Some(Box::new(KsDevice {
+            printer: Some(printer),
+            printing: AtomicBool::new(false),
+            addr: Some(hidraw_path.to_string()),
+            transport_fd: Some(fd),
+            use_socket_io: false,
+        }))
     }
 
-    /// Write raw bytes to the RFCOMM socket. Returns bytes written, or -1 on error.
+    /// Read raw bytes from the underlying device. Returns bytes read, or -1 on error.
     ///
+    /// Uses recv() for BT sockets, read() for hidraw devices.
+    /// In mock mode, returns 0 (EOF).
+    pub fn read(&self, buf: *mut u8, len: usize) -> isize {
+        let fd = match self.transport_fd {
+            Some(fd) => fd,
+            None => return 0,
+        };
+        if self.use_socket_io {
+            unsafe { libc::recv(fd, buf as *mut c_void, len, 0) }
+        } else {
+            unsafe { libc::read(fd, buf as *mut c_void, len) }
+        }
+    }
+
+    /// Write raw bytes to the underlying device. Returns bytes written, or -1 on error.
+    ///
+    /// Uses send() for BT sockets, write() for hidraw devices.
     /// In mock mode, returns `len` (data is discarded).
     pub fn write(&self, buf: *const u8, len: usize) -> isize {
-        let printer = match &self.printer {
-            Some(p) => p,
+        let fd = match self.transport_fd {
+            Some(fd) => fd,
             None => return len as isize,
         };
-        let fd = printer.raw_fd();
-        unsafe { libc::send(fd, buf as *const c_void, len, 0) }
+        if self.use_socket_io {
+            unsafe { libc::send(fd, buf as *const c_void, len, 0) }
+        } else {
+            unsafe { libc::write(fd, buf as *const c_void, len) }
+        }
     }
 
     /// Query printer status and return pappl_preason_t bit flags.
@@ -184,12 +248,17 @@ impl KsDevice {
     pub fn is_mock(&self) -> bool {
         self.printer.is_none()
     }
+
 }
 
 impl Drop for KsDevice {
     fn drop(&mut self) {
         if self.printer.is_some() {
-            log::info!("KsDevice: closing BT connection");
+            if self.use_socket_io {
+                log::info!("KsDevice: closing BT connection");
+            } else {
+                log::info!("KsDevice: closing USB HID connection");
+            }
         } else {
             log::info!("KsDevice: closing mock device");
         }

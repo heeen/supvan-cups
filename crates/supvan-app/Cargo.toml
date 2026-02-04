@@ -13,4 +13,5 @@ pappl-sys = { path = "../pappl-sys" }
 log = { workspace = true }
 env_logger = { workspace = true }
 dbus = "0.9"
+dbus-crossroads = "0.5"
 libc = "0.2"

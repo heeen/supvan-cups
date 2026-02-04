@@ -15,11 +15,16 @@ app (v1.4.20).
 - Other devices advertising Bluetooth names containing T50, T0117,
   Supvan, or Katasymbol
 
+Supported transports:
+
+- **Bluetooth** — RFCOMM (`btrfcomm://` scheme), auto-discovered via BlueZ D-Bus
+- **USB HID** — hidraw (`usbhid://` scheme), VID `0x1820` / PID `0x2073`
+
 ## Crate Structure
 
 | Crate | Description |
 |-------|-------------|
-| `supvan-proto` | Printer protocol: RFCOMM transport, commands, status parsing, bitmap transforms, LZMA compression |
+| `supvan-proto` | Printer protocol: Bluetooth RFCOMM and USB HID transports, commands, status parsing, bitmap transforms, LZMA compression |
 | `pappl-sys` | Bindgen FFI bindings for libpappl and libcups |
 | `supvan-app` | PAPPL printer application binary (`supvan-printer-app`) |
 | `supvan-cli` | Command-line diagnostic tool (`supvan-cli`) |
@@ -37,6 +42,19 @@ sudo apt install libpappl-dev libcups2-dev pkg-config libclang-dev libdbus-1-dev
 - **libclang-dev** -- required by bindgen to generate FFI bindings
 - **libdbus-1-dev** -- BlueZ D-Bus discovery
 - **bluez** -- Bluetooth stack (runtime)
+
+## USB HID Permissions
+
+To use the printer over USB without root, install the udev rule:
+
+```sh
+sudo cp etc/udev/rules.d/70-supvan-t50.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+This grants access to logged-in users via the `uaccess` tag. Re-plug the
+printer after installing the rule.
 
 ## Building
 

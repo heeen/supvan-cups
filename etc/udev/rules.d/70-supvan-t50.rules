@@ -1,0 +1,2 @@
+# Supvan T50 Pro / Katasymbol M50 Pro — allow user access to USB HID interface
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2073", MODE="0660", TAG+="uaccess"

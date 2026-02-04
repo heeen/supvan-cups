@@ -4,6 +4,7 @@ use std::ffi::c_void;
 
 use pappl_sys::*;
 
+use crate::battery_provider;
 use crate::dither::dither_line;
 use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
@@ -175,8 +176,15 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
         }
     };
     let low_battery = dev.battery_low();
+    let bt_addr = dev.addr.clone();
 
     papplPrinterCloseDevice(printer);
+
+    // Update BlueZ battery provider
+    if let (Some(h), Some(addr)) = (battery_provider::handle(), bt_addr.as_deref()) {
+        let percentage = if low_battery { 10 } else { 100 };
+        h.update_battery(addr, percentage);
+    }
 
     let w_hmm = mat.width_mm as i32 * 100;
     let h_hmm = mat.height_mm as i32 * 100;

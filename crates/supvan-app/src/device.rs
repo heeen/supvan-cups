@@ -1,4 +1,4 @@
-//! PAPPL device scheme callbacks for btrfcomm:// scheme.
+//! PAPPL device scheme callbacks for btrfcomm:// and usbhid:// schemes.
 //!
 //! These are `unsafe extern "C"` functions registered via `papplDeviceAddScheme`.
 //! They bridge between PAPPL's device model and our KsDevice type.
@@ -7,10 +7,20 @@ use std::ffi::{c_char, c_void, CStr, CString};
 
 use pappl_sys::*;
 
+use crate::battery_provider;
 use crate::discover;
 use crate::printer_device::{KsDevice, PAPPL_PREASON_OTHER};
+use crate::usb_discover;
+
+// --- Bluetooth RFCOMM callbacks ---
 
 /// List callback: discover Bluetooth printers via BlueZ D-Bus.
+///
+/// Skips reporting BT devices that are also available over USB HID,
+/// since USB is more reliable and doesn't require pairing.
+///
+/// Always returns `false` so PAPPL continues to enumerate other schemes
+/// (the return value means "stop iterating", not "found devices").
 pub unsafe extern "C" fn bt_list_cb(
     cb: pappl_device_cb_t,
     data: *mut c_void,
@@ -22,12 +32,20 @@ pub unsafe extern "C" fn bt_list_cb(
         None => return false,
     };
 
+    // Check if the printer is reachable over USB — if so, skip BT to avoid duplicates.
+    let usb_available = usb_discover::has_device();
+
     discover::discover(|device_info, device_uri, device_id| {
+        if usb_available {
+            log::info!("bt_list_cb: skipping BT device (USB HID available): {device_uri}");
+            return true; // continue enumeration but don't report
+        }
         let c_info = CString::new(device_info).unwrap_or_default();
         let c_uri = CString::new(device_uri).unwrap_or_default();
         let c_id = CString::new(device_id).unwrap_or_default();
         unsafe { pappl_cb(c_info.as_ptr(), c_uri.as_ptr(), c_id.as_ptr(), data) }
-    })
+    });
+    false
 }
 
 /// Open callback: connect to the printer at the btrfcomm:// URI.
@@ -62,6 +80,10 @@ pub unsafe extern "C" fn bt_open_cb(
         None => return false,
     };
 
+    if let Some(h) = battery_provider::handle() {
+        h.add_device(addr, 100);
+    }
+
     papplDeviceSetData(device, Box::into_raw(dev) as *mut c_void);
     true
 }
@@ -70,7 +92,11 @@ pub unsafe extern "C" fn bt_open_cb(
 pub unsafe extern "C" fn bt_close_cb(device: *mut pappl_device_t) {
     let ptr = papplDeviceGetData(device) as *mut KsDevice;
     if !ptr.is_null() {
-        drop(Box::from_raw(ptr));
+        let dev = Box::from_raw(ptr);
+        if let (Some(h), Some(addr)) = (battery_provider::handle(), dev.addr.as_deref()) {
+            h.remove_device(addr);
+        }
+        drop(dev);
     }
 }
 
@@ -102,6 +128,104 @@ pub unsafe extern "C" fn bt_write_cb(
 
 /// Status callback: query printer status flags.
 pub unsafe extern "C" fn bt_status_cb(device: *mut pappl_device_t) -> pappl_preason_t {
+    let ptr = papplDeviceGetData(device) as *mut KsDevice;
+    if ptr.is_null() {
+        return PAPPL_PREASON_OTHER;
+    }
+    (*ptr).status()
+}
+
+// --- USB HID callbacks ---
+
+/// List callback: discover USB HID printers via sysfs.
+///
+/// Always returns `false` so PAPPL continues to enumerate other schemes.
+pub unsafe extern "C" fn usb_list_cb(
+    cb: pappl_device_cb_t,
+    data: *mut c_void,
+    _err_cb: pappl_deverror_cb_t,
+    _err_data: *mut c_void,
+) -> bool {
+    let pappl_cb = match cb {
+        Some(f) => f,
+        None => return false,
+    };
+
+    usb_discover::discover(|device_info, device_uri, device_id| {
+        let c_info = CString::new(device_info).unwrap_or_default();
+        let c_uri = CString::new(device_uri).unwrap_or_default();
+        let c_id = CString::new(device_id).unwrap_or_default();
+        unsafe { pappl_cb(c_info.as_ptr(), c_uri.as_ptr(), c_id.as_ptr(), data) }
+    });
+    false
+}
+
+/// Open callback: open the USB HID device at the usbhid:// URI.
+pub unsafe extern "C" fn usb_open_cb(
+    device: *mut pappl_device_t,
+    device_uri: *const c_char,
+    _name: *const c_char,
+) -> bool {
+    if device_uri.is_null() {
+        return false;
+    }
+
+    let uri_str = match CStr::from_ptr(device_uri).to_str() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    // Extract path from usbhid:///dev/hidrawN
+    let hidraw_path = match uri_str.strip_prefix("usbhid://") {
+        Some(path) => path,
+        None => return false,
+    };
+
+    let dev = match KsDevice::open_usb(hidraw_path) {
+        Some(d) => d,
+        None => return false,
+    };
+
+    papplDeviceSetData(device, Box::into_raw(dev) as *mut c_void);
+    true
+}
+
+/// Close callback: close and free the USB HID KsDevice.
+pub unsafe extern "C" fn usb_close_cb(device: *mut pappl_device_t) {
+    let ptr = papplDeviceGetData(device) as *mut KsDevice;
+    if !ptr.is_null() {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+/// Read callback: read raw bytes from the hidraw device.
+pub unsafe extern "C" fn usb_read_cb(
+    device: *mut pappl_device_t,
+    buffer: *mut c_void,
+    bytes: usize,
+) -> isize {
+    let ptr = papplDeviceGetData(device) as *mut KsDevice;
+    if ptr.is_null() {
+        return -1;
+    }
+    (*ptr).read(buffer as *mut u8, bytes)
+}
+
+/// Write callback: write raw bytes to the hidraw device.
+pub unsafe extern "C" fn usb_write_cb(
+    device: *mut pappl_device_t,
+    buffer: *const c_void,
+    bytes: usize,
+) -> isize {
+    let ptr = papplDeviceGetData(device) as *mut KsDevice;
+    if ptr.is_null() {
+        return -1;
+    }
+    (*ptr).write(buffer as *const u8, bytes)
+}
+
+/// Status callback: query USB HID printer status flags.
+pub unsafe extern "C" fn usb_status_cb(device: *mut pappl_device_t) -> pappl_preason_t {
     let ptr = papplDeviceGetData(device) as *mut KsDevice;
     if ptr.is_null() {
         return PAPPL_PREASON_OTHER;

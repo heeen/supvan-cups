@@ -5,97 +5,85 @@
 //! transfer buffers -> poll complete.
 
 use crate::cmd::*;
-use crate::data::{build_data_frames, DATA_PAYLOAD_SIZE};
+use crate::data::DATA_PAYLOAD_SIZE;
 use crate::error::{Error, Result};
-use crate::rfcomm::RfcommSocket;
 use crate::speed::calc_speed;
-use crate::status::{self, MaterialInfo, PrinterStatus};
+use crate::status::{MaterialInfo, PrinterStatus};
+use crate::transport::Transport;
 use std::os::unix::io::RawFd;
 use std::time::Duration;
 
-/// High-level printer interface over RFCOMM.
+/// High-level printer interface over a pluggable transport.
 pub struct Printer {
-    sock: RfcommSocket,
+    transport: Box<dyn Transport>,
 }
 
 impl Printer {
-    pub fn new(sock: RfcommSocket) -> Self {
-        Self { sock }
+    pub fn new(transport: Box<dyn Transport>) -> Self {
+        Self { transport }
     }
 
-    /// Return the raw file descriptor of the underlying RFCOMM socket.
+    /// Return the raw file descriptor of the underlying transport.
     pub fn raw_fd(&self) -> RawFd {
-        self.sock.raw_fd()
+        self.transport.raw_fd()
     }
 
-    /// Send a standard command and return raw response.
-    pub fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>> {
-        let frame = make_cmd(cmd, param);
-        self.sock.send_cmd(&frame)
-    }
-
-    /// Send a start-transfer command and return raw response.
-    pub fn send_cmd_start_trans(
-        &self,
-        cmd: u8,
-        block_size: u16,
-        block_count: u16,
-    ) -> Result<Option<Vec<u8>>> {
-        let frame = make_cmd_start_trans(cmd, block_size, block_count);
-        self.sock.send_cmd(&frame)
+    /// Whether the transport uses socket I/O (recv/send) vs file I/O (read/write).
+    pub fn use_socket_io(&self) -> bool {
+        self.transport.use_socket_io()
     }
 
     /// CHECK_DEVICE (0x12) - verify printer is present.
     pub fn check_device(&self) -> Result<bool> {
         log::info!("CHECK_DEVICE");
-        let resp = self.send_cmd(CMD_CHECK_DEVICE, 0)?;
-        Ok(resp.is_some_and(|r| status::validate_response(&r, CMD_CHECK_DEVICE)))
+        let resp = self.transport.send_cmd(CMD_CHECK_DEVICE, 0)?;
+        Ok(resp.is_some_and(|r| self.transport.validate_response(&r, CMD_CHECK_DEVICE)))
     }
 
     /// INQUIRY_STA (0x11) - query printer status.
     pub fn query_status(&self) -> Result<Option<PrinterStatus>> {
-        let resp = self.send_cmd(CMD_INQUIRY_STA, 0)?;
-        Ok(resp.and_then(|r| status::parse_status(&r)))
+        let resp = self.transport.send_cmd(CMD_INQUIRY_STA, 0)?;
+        Ok(resp.and_then(|r| self.transport.parse_status_response(&r)))
     }
 
     /// RETURN_MAT (0x30) - query material/label info.
     pub fn query_material(&self) -> Result<Option<MaterialInfo>> {
         log::info!("RETURN_MAT");
-        let resp = self.send_cmd(CMD_RETURN_MAT, 0)?;
-        Ok(resp.and_then(|r| status::parse_material(&r)))
+        let resp = self.transport.send_cmd(CMD_RETURN_MAT, 0)?;
+        Ok(resp.and_then(|r| self.transport.parse_material_response(&r)))
     }
 
     /// RD_DEV_NAME (0x16) - read device name.
     pub fn read_device_name(&self) -> Result<Option<String>> {
         log::info!("RD_DEV_NAME");
-        let resp = self.send_cmd(CMD_RD_DEV_NAME, 0)?;
-        Ok(resp.and_then(|r| status::parse_device_name(&r)))
+        let resp = self.transport.send_cmd(CMD_RD_DEV_NAME, 0)?;
+        Ok(resp.and_then(|r| self.transport.parse_device_name_response(&r)))
     }
 
     /// READ_FWVER (0xC5) - read firmware version.
     pub fn read_firmware_version(&self) -> Result<Option<u8>> {
         log::info!("READ_FWVER");
-        let resp = self.send_cmd(CMD_READ_FWVER, 0)?;
-        Ok(resp.and_then(|r| status::parse_firmware_version(&r)))
+        let resp = self.transport.send_cmd(CMD_READ_FWVER, 0)?;
+        Ok(resp.and_then(|r| self.transport.parse_firmware_version_response(&r)))
     }
 
     /// READ_REV (0x17) - read protocol version.
     pub fn read_version(&self) -> Result<Option<String>> {
         log::info!("READ_REV");
-        let resp = self.send_cmd(CMD_READ_REV, 0)?;
-        Ok(resp.and_then(|r| status::parse_version(&r)))
+        let resp = self.transport.send_cmd(CMD_READ_REV, 0)?;
+        Ok(resp.and_then(|r| self.transport.parse_version_response(&r)))
     }
 
     /// START_PRINT (0x13).
     pub fn start_print(&self) -> Result<Option<Vec<u8>>> {
         log::info!("START_PRINT");
-        self.send_cmd(CMD_START_PRINT, 0)
+        self.transport.send_cmd(CMD_START_PRINT, 0)
     }
 
     /// STOP_PRINT (0x14).
     pub fn stop_print(&self) -> Result<Option<Vec<u8>>> {
         log::info!("STOP_PRINT");
-        self.send_cmd(CMD_STOP_PRINT, 0)
+        self.transport.send_cmd(CMD_STOP_PRINT, 0)
     }
 
     /// Wait for device to be idle (not busy, not printing).
@@ -145,36 +133,46 @@ impl Printer {
 
     /// Transfer a single compressed buffer: NEXT_ZIPPEDBULK -> data packets -> BUF_FULL.
     pub fn transfer_compressed(&self, compressed: &[u8], speed: u16) -> Result<()> {
-        let num_packets = compressed.len().div_ceil(DATA_PAYLOAD_SIZE);
-        log::info!(
-            "transfer: {} bytes, {} packets, speed={}",
-            compressed.len(),
-            num_packets,
-            speed
-        );
+        let compressed_len = compressed.len() as u16;
 
-        // CMD_NEXT_ZIPPEDBULK (0x5C) with block_size=512, block_count=num_packets
-        let resp = self.send_cmd_start_trans(CMD_NEXT_ZIPPEDBULK, 512, num_packets as u16)?;
+        // CMD_NEXT_ZIPPEDBULK (0x5C):
+        //   BT:  SendCmdTwo(0x5C, block_size=512, block_count)
+        //   USB: SendCmd(0x5C, total_length)
+        let resp = if self.transport.use_socket_io() {
+            let num_packets = compressed.len().div_ceil(DATA_PAYLOAD_SIZE);
+            log::info!(
+                "transfer: {} bytes, {} packets, speed={}",
+                compressed.len(),
+                num_packets,
+                speed
+            );
+            self.transport
+                .send_cmd_two(CMD_NEXT_ZIPPEDBULK, 512, num_packets as u16)?
+        } else {
+            log::info!(
+                "transfer: {} bytes, speed={}",
+                compressed.len(),
+                speed
+            );
+            self.transport
+                .send_cmd(CMD_NEXT_ZIPPEDBULK, compressed_len)?
+        };
         if resp.is_none() {
             return Err(Error::InvalidResponse(
                 "no response to NEXT_ZIPPEDBULK".into(),
             ));
         }
 
-        // Send data packets
-        let frames = build_data_frames(compressed);
-        for (i, frame) in frames.iter().enumerate() {
-            let is_last = i == frames.len() - 1;
-            self.sock.send_data_frame(frame, is_last)?;
-        }
+        // Send data packets via the transport
+        self.transport.send_bulk_data(compressed, true)?;
 
         // 20ms delay after last data packet
         std::thread::sleep(Duration::from_millis(20));
 
-        // CMD_BUF_FULL: param=compressed_length, block_count=speed
-        let compressed_len = compressed.len() as u16;
+        // CMD_BUF_FULL: param=compressed_length, param2=speed
         log::info!("BUF_FULL: len={}, speed={}", compressed_len, speed);
-        self.send_cmd_start_trans(CMD_BUF_FULL, compressed_len, speed)?;
+        self.transport
+            .send_cmd_two(CMD_BUF_FULL, compressed_len, speed)?;
 
         Ok(())
     }

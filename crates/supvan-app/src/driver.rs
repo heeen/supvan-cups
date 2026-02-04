@@ -187,7 +187,7 @@ pub unsafe extern "C" fn ks_driver_cb(
     true
 }
 
-/// Auto-add callback: return our driver name for btrfcomm:// devices.
+/// Auto-add callback: return our driver name for btrfcomm:// and usbhid:// devices.
 pub unsafe extern "C" fn ks_autoadd_cb(
     _device_info: *const c_char,
     device_uri: *const c_char,
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn ks_autoadd_cb(
 
     let uri = std::ffi::CStr::from_ptr(device_uri);
     if let Ok(s) = uri.to_str() {
-        if s.starts_with("btrfcomm://") {
+        if s.starts_with("btrfcomm://") || s.starts_with("usbhid://") {
             return DRIVER_NAME.as_ptr();
         }
     }

@@ -1,3 +1,4 @@
+mod battery_provider;
 mod device;
 mod discover;
 mod dither;
@@ -7,6 +8,7 @@ mod job;
 mod printer_device;
 mod raster;
 mod system;
+mod usb_discover;
 mod util;
 
 use pappl_sys::*;

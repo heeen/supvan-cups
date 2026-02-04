@@ -250,7 +250,7 @@ where
 
         log::info!("discover: reporting {name} ({address})");
 
-        let device_info = format!("Supvan T50 Pro {name}");
+        let device_info = format!("Supvan T50 Pro {name} (BT)");
         let device_uri = format!("btrfcomm://bt/{address}");
         let device_id = "MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;";
 
