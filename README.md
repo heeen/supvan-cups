@@ -72,22 +72,33 @@ Binaries:
 ### Printer Application
 
 The printer application runs an IPP server with a web interface on port 8631.
-It auto-discovers Bluetooth printers via BlueZ and registers them as IPP
-printers that any Linux application can print to.
+It auto-discovers printers via BlueZ D-Bus (Bluetooth) and sysfs (USB HID),
+and registers them as IPP Everywhere printers that any Linux application can
+print to. When both transports are available, USB is preferred.
 
 ```sh
 # Start the server
 ./target/release/supvan-printer-app server
 
 # Web interface at http://localhost:8631/
+
+# List discovered devices
+./target/release/supvan-printer-app devices
 ```
 
-Other PAPPL subcommands are available (`devices`, `printers`, `status`,
-`submit`, `shutdown`, etc.). Run without arguments for help.
+Other PAPPL subcommands are available (`printers`, `status`, `submit`,
+`shutdown`, etc.). Run without arguments for help.
+
+For automatic CUPS queue creation, enable `cups-browsed`:
+
+```sh
+sudo systemctl enable --now cups-browsed
+```
 
 #### Systemd User Service
 
-Create `~/.config/systemd/user/supvan-printer-app.service`:
+Install the included unit file or create
+`~/.config/systemd/user/supvan-printer-app.service`:
 
 ```ini
 [Unit]
@@ -97,6 +108,7 @@ After=bluetooth.target dbus.socket
 [Service]
 Type=simple
 ExecStart=/path/to/supvan-printer-app server
+ExecStopPost=/path/to/cups-cleanup.sh
 Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
@@ -104,6 +116,9 @@ Environment=RUST_LOG=info
 [Install]
 WantedBy=default.target
 ```
+
+The `ExecStopPost` cleanup script removes stale CUPS queues that were
+auto-created by cups-browsed, preventing duplicates across restarts.
 
 Then:
 
@@ -114,20 +129,24 @@ systemctl --user enable --now supvan-printer-app
 
 ### CLI Tool
 
-Direct printer interaction over Bluetooth for diagnostics and testing.
+Direct printer interaction over Bluetooth or USB HID for diagnostics and
+testing. Pass a Bluetooth address or `/dev/hidrawN` path as the target.
 
 ```sh
 # Discover nearby printers
 supvan-cli discover
 
-# Probe a printer (status, material, firmware)
+# Probe over Bluetooth
 supvan-cli probe AA:BB:CC:DD:EE:FF
 
+# Probe over USB HID
+supvan-cli probe /dev/hidraw7
+
 # Query loaded label info
-supvan-cli material AA:BB:CC:DD:EE:FF
+supvan-cli material /dev/hidraw7
 
 # Send a test print
-supvan-cli test-print AA:BB:CC:DD:EE:FF --density 4
+supvan-cli test-print /dev/hidraw7 --density 4
 ```
 
 ## Debug Dumps

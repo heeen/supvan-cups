@@ -374,12 +374,16 @@ print flow, buffer format, and LZMA parameters are identical to Bluetooth --
 only the transport framing differs.
 
 Source: Electron app bundle (webpack, minified JS), extracted with babel/AST.
+Verified against hardware: Supvan T50 Pro, VID `0x1820`, PID `0x2073`.
 
-### USB HID Transport
+### USB HID Device
 
-- WebHID API: `navigator.hid`
-- Reports: 64-byte HID output reports via `sendReport(0, data)`
-- Responses: 8 bytes via `oninputreport` callback
+- VID: `0x1820`, PID: `0x2073`
+- Interface: HID (USB class 0x03), presented as `/dev/hidrawN` on Linux
+- WebHID API: `navigator.hid` (Electron app)
+- Linux: direct hidraw read/write (64-byte reports)
+- Reports: 64-byte HID output reports via `sendReport(0, data)` / `write(fd, ...)`
+- Responses: 8-byte HID input reports (standard commands), 64-byte for material queries
 - No checksums, no protocol ID, no framing magic beyond the 0xC0/0x40 header
 
 ### USB HID Command Frame (SendCmd)
@@ -429,25 +433,72 @@ for each 64-byte chunk of data:
 
 ### USB HID Response
 
-Responses arrive as HID input reports (8 bytes). The `oninputreport` handler
-reads `event.data.buffer` and extracts bytes `[0..7]`.
+Standard responses arrive as 8-byte HID input reports. Byte `[0]` is **not**
+an echoed command byte (unlike Bluetooth) -- it appears to be a length or type
+indicator. The Electron app's `handleInquiryStatus(A)` skips `A[0]` entirely.
 
-Status parsing uses bytes `[1..8]` of the raw report (offset by 1 from the
-report buffer start):
+Status parsing uses bytes `[1..7]`:
 
 ```
-status[0] = response[1]    MSTA low   (same bit layout as BT byte 14)
-status[1] = response[2]    MSTA high  (same bit layout as BT byte 15)
-status[2] = response[3]    FSTA low   (same bit layout as BT byte 16)
-status[3] = response[4]    FSTA high  (same bit layout as BT byte 17)
-status[4] = response[5]    print count low
-status[5] = response[6]    print count high
-status[6] = response[7]
-status[7] = response[8]
+Offset  Description
+------  -----------
+ 0      Length/type indicator (not the command echo)
+ 1      MSTA low   (same bit layout as BT byte 14)
+ 2      MSTA high  (same bit layout as BT byte 15)
+ 3      FSTA low   (same bit layout as BT byte 16)
+ 4      FSTA high  (same bit layout as BT byte 17)
+ 5      Print count low
+ 6      Print count high
+ 7      Reserved
 ```
 
 The status bit definitions (BufSta, PrtSta, CoverOpen, etc.) are identical
 to the Bluetooth protocol.
+
+### USB HID Material Response (CMD_RETURN_MAT = 0x30)
+
+Unlike standard commands, RETURN_MAT over USB returns a **64-byte** HID report
+containing material and device identification data. This was initially assumed
+unsupported over USB but verified to work on hardware.
+
+```
+Offset  Size  Description
+------  ----  -----------
+ 0      1     Length/type indicator
+ 1-8    8     Status bytes (same as INQUIRY_STA)
+ 19     1     Label width (mm)
+ 20     1     Label height (mm)
+ 21     1     Gap (mm)
+ 22     1     Label type
+ 31-32  2     Serial number (LE16)
+ 40+    var   Device serial as null-terminated ASCII (e.g. "T0117A2410211517")
+```
+
+Note: UUID, code, and remaining label count fields present in the Bluetooth
+response are not populated in the USB response.
+
+### USB HID Device Name / Version Queries
+
+`CMD_RD_DEV_NAME` (0x16), `CMD_READ_FWVER` (0xC5), and `CMD_READ_REV` (0x17)
+return only the standard 8-byte status response over USB, which does not carry
+the ASCII payload available in the Bluetooth response (offset 22+). These
+queries effectively return no data over USB HID.
+
+### USB HID Print Flow Differences
+
+The overall print flow is the same (CHECK_DEVICE -> poll status -> START_PRINT
+-> transfer buffers -> poll complete), but two commands have different framing:
+
+**CMD_NEXT_ZIPPEDBULK (0x5C):**
+- Bluetooth: `SendCmdTwo(0x5C, block_size=512, num_packets)` — two parameters
+- USB HID: `SendCmd(0x5C, total_compressed_length)` — single parameter
+
+This is a critical difference. Using BT framing over USB causes garbled
+output in the last ~10 print lines because the printer interprets `512` as
+the total data length rather than a block size.
+
+**CMD_BUF_FULL (0x10):**
+- Both: `SendCmdTwo(0x10, compressed_length, speed)` — identical framing
 
 ### Bluetooth vs USB HID Comparison
 
@@ -458,8 +509,12 @@ to the Bluetooth protocol.
 | Protocol ID / version | 0x10, 0x01 in header | None |
 | Parameter byte order | Little-endian | Big-endian |
 | Data framing | 506B AA/BB packet in 512B frame, split 4x128B | Raw 64-byte HID reports |
-| Response size | Variable (20+ bytes) | 8 bytes |
-| Status byte offset | Response bytes [14..19] | Response bytes [1..6] |
+| Response size | Variable (20+ bytes) | 8 bytes (status), 64 bytes (material) |
+| Status byte offset | Response bytes [14..19] | Response bytes [1..7] |
+| Response cmd echo | Yes (byte 7) | No (byte 0 is length/type) |
+| NEXT_ZIPPEDBULK | SendCmdTwo(block_size, count) | SendCmd(total_length) |
+| Material query | Full data (UUID, code, remaining) | Partial (dimensions, SN, device serial) |
+| Device name/version | ASCII at offset 22+ | Not available |
 | Command bytes | 0x10-0xD9 | Same |
 | Print flow | CHECK_DEVICE -> STATUS -> START -> transfer -> BUF_FULL | Same |
 | Print buffers | 4096 bytes, 14-byte header | Same |
