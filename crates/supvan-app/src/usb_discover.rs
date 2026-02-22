@@ -2,6 +2,10 @@
 //!
 //! Scans `/sys/class/hidraw/` for devices matching VID=0x1820, PID=0x2073
 //! (Supvan T50 Pro USB HID interface).
+//!
+//! URIs use the USB serial number for stability across hotplug:
+//! `usbhid://SERIAL` (e.g. `usbhid://7E1222120101`).
+//! Falls back to `usbhid:///dev/hidrawN` if no serial is available.
 
 use std::fs;
 use std::path::Path;
@@ -46,7 +50,7 @@ where
         let device_path = hidraw_dir.join(&*name_str).join("device");
 
         // Try to find idVendor/idProduct by walking up the device tree
-        let (vid, pid) = match read_usb_ids(&device_path) {
+        let (vid, pid, serial) = match read_usb_ids(&device_path) {
             Some(ids) => ids,
             None => {
                 log::debug!("usb_discover: {name_str}: no USB IDs found");
@@ -54,18 +58,23 @@ where
             }
         };
 
-        log::debug!("usb_discover: {name_str}: VID={vid} PID={pid}");
+        log::debug!("usb_discover: {name_str}: VID={vid} PID={pid} serial={serial:?}");
 
         if vid != SUPVAN_USB_VID || pid != SUPVAN_USB_PID {
             continue;
         }
 
         let dev_path = format!("/dev/{name_str}");
-        let uri = format!("usbhid://{dev_path}");
-        let info = format!("Supvan T50 Pro (USB)");
+        let uri = match &serial {
+            Some(s) => format!("usbhid://{s}"),
+            None => format!("usbhid://{dev_path}"),
+        };
+        let info = "Supvan T50 Pro (USB)".to_string();
         let device_id = "MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;";
 
-        log::info!("usb_discover: found {dev_path} (VID={vid}, PID={pid})");
+        log::info!(
+            "usb_discover: found {dev_path} (VID={vid}, PID={pid}, serial={serial:?}) -> {uri}"
+        );
         found = true;
 
         if !cb(&info, &uri, device_id) {
@@ -81,8 +90,70 @@ pub fn has_device() -> bool {
     discover(|_, _, _| true)
 }
 
-/// Walk up the sysfs device tree to find idVendor and idProduct.
-fn read_usb_ids(device_path: &Path) -> Option<(String, String)> {
+/// Return the device path of the first Supvan USB HID device (e.g. "/dev/hidraw10").
+/// Legacy fallback for URIs without serial numbers.
+pub fn find_first_device() -> Option<String> {
+    let mut path = None;
+    scan_hidraw_paths(|dev_path, _vid, _pid, _serial| {
+        path = Some(dev_path.to_string());
+        false // stop after first
+    });
+    path
+}
+
+/// Find the current `/dev/hidrawN` path for a device with the given serial number.
+///
+/// Scans sysfs for a hidraw device matching VID/PID/serial.
+pub fn find_device_by_serial(serial: &str) -> Option<String> {
+    let mut path = None;
+    scan_hidraw_paths(|dev_path, _vid, _pid, dev_serial| {
+        if dev_serial.as_deref() == Some(serial) {
+            path = Some(dev_path.to_string());
+            return false; // stop
+        }
+        true // continue
+    });
+    path
+}
+
+/// Low-level scan of /sys/class/hidraw: calls `cb(dev_path, vid, pid, serial)` for each
+/// Supvan device found. Return `false` from `cb` to stop early.
+fn scan_hidraw_paths<F>(mut cb: F)
+where
+    F: FnMut(&str, &str, &str, &Option<String>) -> bool,
+{
+    let hidraw_dir = Path::new("/sys/class/hidraw");
+    let entries = match fs::read_dir(hidraw_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with("hidraw") {
+            continue;
+        }
+
+        let device_path = hidraw_dir.join(&*name_str).join("device");
+        let (vid, pid, serial) = match read_usb_ids(&device_path) {
+            Some(ids) => ids,
+            None => continue,
+        };
+
+        if vid != SUPVAN_USB_VID || pid != SUPVAN_USB_PID {
+            continue;
+        }
+
+        let dev_path = format!("/dev/{name_str}");
+        if !cb(&dev_path, &vid, &pid, &serial) {
+            break;
+        }
+    }
+}
+
+/// Walk up the sysfs device tree to find idVendor, idProduct, and serial.
+fn read_usb_ids(device_path: &Path) -> Option<(String, String, Option<String>)> {
     // Resolve the "device" symlink to get the real path
     let real_path = fs::canonicalize(device_path).ok()?;
 
@@ -94,7 +165,11 @@ fn read_usb_ids(device_path: &Path) -> Option<(String, String)> {
         if vid_path.exists() && pid_path.exists() {
             let vid = fs::read_to_string(&vid_path).ok()?.trim().to_string();
             let pid = fs::read_to_string(&pid_path).ok()?.trim().to_string();
-            return Some((vid, pid));
+            let serial = fs::read_to_string(current.join("serial"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            return Some((vid, pid, serial));
         }
         current = current.parent()?;
     }
