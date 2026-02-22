@@ -69,6 +69,14 @@ impl HidrawDevice {
             return Ok(None); // timeout
         }
 
+        // Check for device error/disconnect before attempting read
+        if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                format!("hidraw poll error: revents=0x{:04x}", pfd.revents),
+            )));
+        }
+
         let mut buf = [0u8; HID_REPORT_SIZE];
         let n = unsafe {
             libc::read(
