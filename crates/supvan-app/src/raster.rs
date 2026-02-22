@@ -1,6 +1,6 @@
 //! PAPPL raster callbacks and printer status callback.
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr};
 
 use pappl_sys::*;
 
@@ -55,7 +55,21 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
 
     let mut ks_job = match KsJob::start(dev, w, h, bpl, density) {
         Some(j) => j,
-        None => return false,
+        None => {
+            papplLogJob(
+                job,
+                pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR,
+                CStr::from_bytes_with_nul(b"Job start failed (device not ready, timeout, or printer error - check RUST_LOG=info)\0")
+                    .unwrap()
+                    .as_ptr(),
+            );
+            papplJobSetReasons(
+                job,
+                pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE,
+                pappl_jreason_e_PAPPL_JREASON_NONE,
+            );
+            return false;
+        }
     };
 
     // Create PGM accumulator if dump dir is set and input is 8bpp
@@ -130,7 +144,22 @@ pub unsafe extern "C" fn ks_rendpage_cb(
 
     let ks_job = &mut *job_ptr;
     let dev = &*dev_ptr;
-    ks_job.end_page(dev)
+    if !ks_job.end_page(dev) {
+        papplLogJob(
+            job,
+            pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR,
+            CStr::from_bytes_with_nul(b"Page transfer failed (device error, timeout, or transfer - check RUST_LOG=info)\0")
+                .unwrap()
+                .as_ptr(),
+        );
+        papplJobSetReasons(
+            job,
+            pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE,
+            pappl_jreason_e_PAPPL_JREASON_NONE,
+        );
+        return false;
+    }
+    true
 }
 
 /// End-job callback.
