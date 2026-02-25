@@ -119,7 +119,7 @@ impl KsJob {
         self.raster_data[offset..offset + copy_len].copy_from_slice(&line[..copy_len]);
         self.lines_received += 1;
 
-        if self.lines_received.is_multiple_of(100) {
+        if self.lines_received % 100 == 0 {
             log::debug!(
                 "KsJob::write_line: received {} / {} lines",
                 self.lines_received,

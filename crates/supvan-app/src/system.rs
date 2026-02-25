@@ -132,13 +132,5 @@ pub unsafe extern "C" fn ks_system_cb(
     papplSystemSetSaveCallback(system, Some(ks_save_cb), std::ptr::null_mut());
     papplSystemLoadState(system, state_path().as_ptr());
 
-    // Auto-discover and add Bluetooth printers
-    papplSystemCreatePrinters(
-        system,
-        pappl_devtype_e_PAPPL_DEVTYPE_CUSTOM_LOCAL,
-        None, // create_cb
-        std::ptr::null_mut(),
-    );
-
     system
 }
