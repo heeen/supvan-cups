@@ -9,20 +9,14 @@ use dbus::blocking::stdintf::org_freedesktop_dbus::ObjectManager;
 use dbus::blocking::Connection;
 use std::time::Duration;
 
+use crate::models;
+
 type PropMap = std::collections::HashMap<String, dbus::arg::Variant<Box<dyn dbus::arg::RefArg>>>;
 type IfaceMap = std::collections::HashMap<String, PropMap>;
 type ManagedObjects = std::collections::HashMap<dbus::Path<'static>, IfaceMap>;
 
 const SPP_UUID_PREFIX: &str = "00001101-";
 const BLUEZ_SERVICE: &str = "org.bluez";
-
-fn is_matching_printer_name(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("t50")
-        || lower.contains("t0117")
-        || lower.contains("supvan")
-        || lower.contains("katasymbol")
-}
 
 fn has_spp_uuid(props: &PropMap) -> bool {
     props
@@ -193,7 +187,7 @@ where
         };
 
         let name = get_str_prop(props, "Name").unwrap_or_default();
-        if !is_matching_printer_name(&name) {
+        if !models::is_matching_bt_name(&name) {
             continue;
         }
 
@@ -244,17 +238,17 @@ where
             continue;
         }
 
-        if !is_matching_printer_name(&name) {
+        if !models::is_matching_bt_name(&name) {
             continue;
         }
 
         log::info!("discover: reporting {name} ({address})");
 
-        let device_info = format!("Supvan T50 Pro {name} (BT)");
+        let device_info = format!("Supvan {name} (BT)");
         let device_uri = format!("btrfcomm://bt/{address}");
-        let device_id = "MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;";
+        let device_id = format!("MFG:Supvan;MDL:{name} (BT);CMD:SUPVAN;");
 
-        if !cb(&device_info, &device_uri, device_id) {
+        if !cb(&device_info, &device_uri, &device_id) {
             break;
         }
     }

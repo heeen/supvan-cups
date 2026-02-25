@@ -7,6 +7,7 @@ use pappl_sys::*;
 
 use crate::device;
 use crate::driver;
+use crate::models;
 
 /// State file path: $XDG_STATE_HOME/supvan-printer-app.state or
 /// ~/.local/state/supvan-printer-app.state.
@@ -73,7 +74,7 @@ pub unsafe extern "C" fn ks_system_cb(
     // Bind TCP listener
     papplSystemAddListeners(system, std::ptr::null());
 
-    papplSystemSetFooterHTML(system, c"Supvan T50 Pro Printer Application".as_ptr());
+    papplSystemSetFooterHTML(system, c"Supvan Printer Application".as_ptr());
 
     let mut version: pappl_version_t = Default::default();
     crate::util::copy_to_c_buf(&mut version.name, b"supvan-printer-app");
@@ -107,17 +108,20 @@ pub unsafe extern "C" fn ks_system_cb(
         None, // id_cb
     );
 
-    // Register printer driver
-    let mut drv = pappl_pr_driver_t {
-        name: driver::DRIVER_NAME.as_ptr(),
-        description: c"Supvan T50 Pro".as_ptr(),
-        device_id: c"MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;".as_ptr(),
-        extension: std::ptr::null_mut(),
-    };
+    // Register printer drivers (all families)
+    let mut drivers: Vec<pappl_pr_driver_t> = models::families()
+        .iter()
+        .map(|f| pappl_pr_driver_t {
+            name: f.driver_name.as_ptr(),
+            description: f.description.as_ptr(),
+            device_id: f.device_id.as_ptr(),
+            extension: std::ptr::null_mut(),
+        })
+        .collect();
     papplSystemSetPrinterDrivers(
         system,
-        1,
-        &mut drv,
+        drivers.len() as i32,
+        drivers.as_mut_ptr(),
         Some(driver::ks_autoadd_cb),
         None, // create_cb
         Some(driver::ks_driver_cb),

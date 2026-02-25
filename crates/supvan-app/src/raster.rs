@@ -9,6 +9,7 @@ use crate::dither::dither_line;
 use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
 use crate::job::KsJob;
+use crate::models;
 use crate::printer_device::KsDevice;
 use crate::util::copy_to_c_buf;
 
@@ -26,6 +27,16 @@ unsafe fn get_darkness(job: *mut pappl_job_t) -> i32 {
     }
 
     data.darkness_configured
+}
+
+/// Look up the driver family for a printer via its driver name.
+unsafe fn get_family(printer: *mut pappl_printer_t) -> Option<&'static models::DriverFamily> {
+    let name_ptr = papplPrinterGetDriverName(printer);
+    if name_ptr.is_null() {
+        return None;
+    }
+    let name = CStr::from_ptr(name_ptr);
+    models::family_by_driver_name(name)
 }
 
 /// Start-job callback.
@@ -53,7 +64,13 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
     let darkness = get_darkness(job);
     let density = ((darkness * 15 + 50) / 100) as u8;
 
-    let mut ks_job = match KsJob::start(dev, w, h, bpl, density) {
+    // Look up printhead width from driver family
+    let printer = papplJobGetPrinter(job);
+    let printhead_width_dots = get_family(printer)
+        .map(|f| f.printhead_width_dots)
+        .unwrap_or(384);
+
+    let mut ks_job = match KsJob::start(dev, w, h, bpl, density, printhead_width_dots) {
         Some(j) => j,
         None => {
             papplLogJob(
@@ -185,6 +202,8 @@ pub unsafe extern "C" fn ks_rendjob_cb(
 
 /// Printer status callback — update media-ready from loaded roll.
 pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
+    let family = get_family(printer).unwrap_or(models::default_family());
+
     let device = papplPrinterOpenDevice(printer);
     if device.is_null() {
         return false;
@@ -218,13 +237,13 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
     let w_hmm = mat.width_mm as i32 * 100;
     let h_hmm = mat.height_mm as i32 * 100;
 
-    let best = match find_best_media(w_hmm, h_hmm) {
+    let best = match find_best_media(family, w_hmm, h_hmm) {
         Some(i) => i,
         None => return true,
     };
 
     let mut ready: pappl_media_col_t = Default::default();
-    fill_media_col(&mut ready, best);
+    fill_media_col(family, &mut ready, best);
 
     papplPrinterSetReadyMedia(printer, 1, &mut ready);
 

@@ -38,34 +38,27 @@ Rust toolchain (edition 2021) and the following system packages:
 sudo apt install libpappl-dev libcups2-dev pkg-config libclang-dev libdbus-1-dev bluez
 ```
 
-- **libpappl-dev**, **libcups2-dev** -- printer application framework and CUPS libraries
-- **libclang-dev** -- required by bindgen to generate FFI bindings
-- **libdbus-1-dev** -- BlueZ D-Bus discovery
-- **bluez** -- Bluetooth stack (runtime)
-
-## USB HID Permissions
-
-To use the printer over USB without root, install the udev rule:
+## Building and Installing
 
 ```sh
-sudo cp etc/udev/rules.d/70-supvan-t50.rules /etc/udev/rules.d/
+make build                # cargo build --release
+sudo make install         # installs binary, systemd unit, data files, udev rule
 sudo udevadm control --reload-rules
-sudo udevadm trigger
 ```
 
-This grants access to logged-in users via the `uaccess` tag. Re-plug the
-printer after installing the rule.
+`make install` places:
 
-## Building
+| File | Destination |
+|------|-------------|
+| `supvan-printer-app` | `/usr/bin/` |
+| `data/models.toml` | `/usr/share/supvan-printer-app/` |
+| `supvan-printer-app.service` | `/usr/lib/systemd/user/` |
+| `cups-cleanup.sh`, `cups-register.sh` | `/usr/lib/supvan-printer-app/` |
+| `70-supvan-t50.rules` | `/usr/lib/udev/rules.d/` |
 
-```sh
-cargo build --release
-```
+Re-plug the USB printer after installing the udev rule.
 
-Binaries:
-
-- `target/release/supvan-printer-app`
-- `target/release/supvan-cli`
+To uninstall: `sudo make uninstall`.
 
 ## Usage
 
@@ -77,13 +70,9 @@ and registers them as IPP Everywhere printers that any Linux application can
 print to. When both transports are available, USB is preferred.
 
 ```sh
-# Start the server
-./target/release/supvan-printer-app server
-
+supvan-printer-app server         # start the server
+supvan-printer-app devices        # list discovered devices
 # Web interface at http://localhost:8631/
-
-# List discovered devices
-./target/release/supvan-printer-app devices
 ```
 
 Other PAPPL subcommands are available (`printers`, `status`, `submit`,
@@ -97,35 +86,14 @@ sudo systemctl enable --now cups-browsed
 
 #### Systemd User Service
 
-Install the included unit file or create
-`~/.config/systemd/user/supvan-printer-app.service`:
-
-```ini
-[Unit]
-Description=Supvan T50 Pro Printer Application
-After=bluetooth.target dbus.socket
-
-[Service]
-Type=simple
-ExecStart=/path/to/supvan-printer-app server
-ExecStopPost=/path/to/cups-cleanup.sh
-Restart=on-failure
-RestartSec=5
-Environment=RUST_LOG=info
-
-[Install]
-WantedBy=default.target
-```
-
-The `ExecStopPost` cleanup script removes stale CUPS queues that were
-auto-created by cups-browsed, preventing duplicates across restarts.
-
-Then:
-
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now supvan-printer-app
 ```
+
+The service unit is installed by `make install`. The `ExecStopPost` cleanup
+script removes stale CUPS queues that were auto-created by cups-browsed,
+preventing duplicates across restarts.
 
 ### CLI Tool
 
@@ -133,44 +101,19 @@ Direct printer interaction over Bluetooth or USB HID for diagnostics and
 testing. Pass a Bluetooth address or `/dev/hidrawN` path as the target.
 
 ```sh
-# Discover nearby printers
-supvan-cli discover
-
-# Probe over Bluetooth
-supvan-cli probe AA:BB:CC:DD:EE:FF
-
-# Probe over USB HID
-supvan-cli probe /dev/hidraw7
-
-# Query loaded label info
-supvan-cli material /dev/hidraw7
-
-# Send a test print
+supvan-cli discover                          # discover nearby printers
+supvan-cli probe AA:BB:CC:DD:EE:FF           # probe over Bluetooth
+supvan-cli probe /dev/hidraw7                # probe over USB HID
+supvan-cli material /dev/hidraw7             # query loaded label info
 supvan-cli test-print /dev/hidraw7 --density 4
 ```
-
-## Debug Dumps
-
-Set `SUPVAN_DUMP_DIR` to capture raster images at each pipeline stage:
-
-```sh
-export SUPVAN_DUMP_DIR=~/.local/state/supvan-dumps
-mkdir -p "$SUPVAN_DUMP_DIR"
-```
-
-Each print job produces:
-
-| File | Format | Contents |
-|------|--------|----------|
-| `supvan_NNNN_pre.pgm` | PGM P5 (8bpp) | Pre-dither grayscale input from PAPPL |
-| `supvan_NNNN.pbm` | PBM P4 (1bpp) | Post-dither label-sized bitmap |
-| `supvan_NNNN_printhead.pbm` | PBM P4 (1bpp) | Final 384-dot-wide printhead image |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `RUST_LOG` | Log level (`debug`, `info`, `warn`, `error`) |
+| `SUPVAN_MODELS` | Override path to `models.toml` |
 | `SUPVAN_DUMP_DIR` | Directory for debug image dumps |
 | `SUPVAN_MOCK` | Set to `1` to run without a real printer |
 | `XDG_STATE_HOME` | Override state file location (default: `~/.local/state`) |

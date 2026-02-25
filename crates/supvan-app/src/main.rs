@@ -5,6 +5,7 @@ mod dither;
 mod driver;
 mod dump;
 mod job;
+mod models;
 mod printer_device;
 mod raster;
 mod system;
@@ -15,13 +16,17 @@ use pappl_sys::*;
 
 fn main() {
     let _ = env_logger::try_init();
+    models::load();
 
-    let mut drv = pappl_pr_driver_t {
-        name: driver::DRIVER_NAME.as_ptr(),
-        description: c"Supvan T50 Pro".as_ptr(),
-        device_id: c"MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;".as_ptr(),
-        extension: std::ptr::null_mut(),
-    };
+    let mut drivers: Vec<pappl_pr_driver_t> = models::families()
+        .iter()
+        .map(|f| pappl_pr_driver_t {
+            name: f.driver_name.as_ptr(),
+            description: f.description.as_ptr(),
+            device_id: f.device_id.as_ptr(),
+            extension: std::ptr::null_mut(),
+        })
+        .collect();
 
     let argc = std::env::args().count() as i32;
     let args: Vec<std::ffi::CString> = std::env::args()
@@ -37,9 +42,9 @@ fn main() {
             argc,
             argv.as_mut_ptr(),
             c"1.0.0".as_ptr(),
-            c"Supvan T50 Pro Printer Application".as_ptr(),
-            1, // num_drivers
-            &mut drv,
+            c"Supvan Printer Application".as_ptr(),
+            drivers.len() as i32,
+            drivers.as_mut_ptr(),
             Some(driver::ks_autoadd_cb),
             Some(driver::ks_driver_cb),
             std::ptr::null(), // subcmd_name

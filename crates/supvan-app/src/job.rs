@@ -1,8 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use supvan_proto::bitmap::{
-    center_in_printhead, raster_to_column_major, DEFAULT_MARGIN_DOTS, PRINTHEAD_WIDTH_DOTS,
-};
+use supvan_proto::bitmap::{center_in_printhead, raster_to_column_major, DEFAULT_MARGIN_DOTS};
 use supvan_proto::buffer::split_into_buffers;
 use supvan_proto::compress::compress_buffers;
 use supvan_proto::speed::calc_speed;
@@ -18,6 +16,7 @@ pub struct KsJob {
     pub raster_data: Vec<u8>,
     pub lines_received: u32,
     pub density: u8,
+    pub printhead_width_dots: u32,
     /// Pre-dither PGM accumulator (only when SUPVAN_DUMP_DIR is set and input is 8bpp).
     pub pgm_acc: Option<PgmAccumulator>,
 }
@@ -26,10 +25,17 @@ impl KsJob {
     /// Start a print job: runs CHECK_DEVICE -> wait_ready -> START_PRINT -> wait_printing.
     ///
     /// In mock mode, skips all printer protocol and just allocates the raster buffer.
-    pub fn start(dev: &KsDevice, w: u32, h: u32, bpl: u32, density: u8) -> Option<Box<Self>> {
+    pub fn start(
+        dev: &KsDevice,
+        w: u32,
+        h: u32,
+        bpl: u32,
+        density: u8,
+        printhead_width_dots: u32,
+    ) -> Option<Box<Self>> {
         let mock = dev.is_mock();
 
-        log::info!("KsJob::start: {w}x{h}, bpl={bpl}, density={density}, mock={mock}");
+        log::info!("KsJob::start: {w}x{h}, bpl={bpl}, density={density}, printhead={printhead_width_dots}, mock={mock}");
 
         if let Some(ref printer) = dev.printer {
             log::debug!("KsJob::start: CHECK_DEVICE");
@@ -97,6 +103,7 @@ impl KsJob {
             raster_data: vec![0u8; (h * bpl) as usize],
             lines_received: 0,
             density,
+            printhead_width_dots,
             pgm_acc: None,
         }))
     }
@@ -153,13 +160,13 @@ impl KsJob {
         let (col_data, num_cols, _col_bpl) =
             raster_to_column_major(&self.raster_data, self.width, self.height);
 
-        // 2. Center in printhead canvas (384 dots = 48mm)
-        log::debug!("KsJob::end_page: center_in_printhead");
+        // 2. Center in printhead canvas
+        log::debug!("KsJob::end_page: center_in_printhead ({}dots)", self.printhead_width_dots);
         let (canvas, canvas_bpl) =
-            center_in_printhead(&col_data, num_cols, self.width, PRINTHEAD_WIDTH_DOTS);
+            center_in_printhead(&col_data, num_cols, self.width, self.printhead_width_dots);
 
         // Dump printhead-sized image (column-major → viewable PBM)
-        dump_printhead_pbm(&canvas, num_cols, canvas_bpl, PRINTHEAD_WIDTH_DOTS);
+        dump_printhead_pbm(&canvas, num_cols, canvas_bpl, self.printhead_width_dots);
 
         // 3. Split into print buffers
         log::debug!("KsJob::end_page: split_into_buffers");

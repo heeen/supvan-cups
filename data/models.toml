@@ -1,0 +1,212 @@
+# Supvan printer model registry.
+#
+# Dimensions are in millimetres. PWG media names and hundredths-of-mm sizes
+# are derived at load time.
+
+# -- Driver families ---------------------------------------------------------
+
+[[families]]
+name = "supvan_t50"
+description = "Supvan T50 Series"
+dpi = 203
+printhead_dots = 384
+media_mm = [
+    [40, 30], [40, 40], [40, 50], [40, 60], [40, 70], [40, 80],
+    [30, 15], [30, 20], [30, 30], [30, 40],
+    [48, 30], [48, 45], [48, 70],
+    [25, 25],
+    [50, 30],
+]
+
+[[families]]
+name = "supvan_t80"
+description = "Supvan T80 Series"
+dpi = 201
+printhead_dots = 568
+media_mm = [
+    [40, 30], [40, 40], [40, 50], [40, 60], [40, 70], [40, 80],
+    [30, 15], [30, 20], [30, 30], [30, 40],
+    [48, 30], [48, 45], [48, 70],
+    [25, 25],
+    [50, 30],
+    [60, 30], [60, 40], [60, 60],
+    [70, 30], [70, 40], [70, 70],
+    [72, 30], [72, 45],
+]
+
+[[families]]
+name = "supvan_g"
+description = "Supvan G Series"
+dpi = 193
+printhead_dots = 190
+media_mm = [
+    [12, 30], [12, 40], [12, 20],
+    [15, 30], [15, 40], [15, 20],
+    [20, 30], [20, 40], [20, 20],
+    [25, 30], [25, 40], [25, 25],
+]
+
+[[families]]
+name = "supvan_tp76"
+description = "Supvan TP76 Series"
+dpi = 305
+printhead_dots = 912
+media_mm = [
+    [76, 30], [76, 40], [76, 50], [76, 60], [76, 70],
+    [60, 30], [60, 40], [60, 50],
+    [50, 30], [50, 40], [50, 50],
+    [40, 30], [40, 40],
+]
+
+[[families]]
+name = "supvan_tp80"
+description = "Supvan TP80 Series"
+dpi = 305
+printhead_dots = 960
+media_mm = [
+    [80, 30], [80, 40], [80, 50], [80, 60], [80, 70],
+    [70, 30], [70, 40],
+    [60, 30], [60, 40],
+    [50, 30], [50, 40],
+    [40, 30], [40, 40],
+]
+
+[[families]]
+name = "supvan_tp86"
+description = "Supvan TP86 Series"
+dpi = 305
+printhead_dots = 1032
+media_mm = [
+    [86, 30], [86, 40], [86, 50], [86, 60], [86, 70],
+    [76, 30], [76, 40],
+    [70, 30], [70, 40],
+    [60, 30], [60, 40],
+    [50, 30], [50, 40],
+]
+
+[[families]]
+name = "supvan_sp650"
+description = "Supvan SP650"
+dpi = 203
+printhead_dots = 384
+media_mm = [
+    [40, 30], [40, 40], [40, 50], [40, 60], [40, 70], [40, 80],
+    [30, 15], [30, 20], [30, 30], [30, 40],
+    [48, 30], [48, 45], [48, 70],
+    [25, 25],
+    [50, 30],
+]
+
+# -- USB models (VID 0x1820) -------------------------------------------------
+
+# T50 family
+[[models]]
+pid = "2072"
+name = "T50M"
+family = "supvan_t50"
+
+[[models]]
+pid = "2073"
+name = "T50M Pro"
+family = "supvan_t50"
+
+[[models]]
+pid = "2074"
+name = "T50M Plus"
+family = "supvan_t50"
+
+[[models]]
+pid = "2076"
+name = "T50s"
+family = "supvan_t50"
+
+[[models]]
+pid = "2077"
+name = "T50s Pro"
+family = "supvan_t50"
+
+# T80 family
+[[models]]
+pid = "2075"
+name = "T80M"
+family = "supvan_t80"
+
+[[models]]
+pid = "207a"
+name = "T80M Pro"
+family = "supvan_t80"
+
+# G family
+[[models]]
+pid = "2090"
+name = "G11"
+family = "supvan_g"
+
+[[models]]
+pid = "2091"
+name = "G15"
+family = "supvan_g"
+
+[[models]]
+pid = "2092"
+name = "G18"
+family = "supvan_g"
+
+[[models]]
+pid = "2093"
+name = "G18 Pro"
+family = "supvan_g"
+
+# TP76 family
+[[models]]
+pid = "202c"
+name = "TP76I"
+family = "supvan_tp76"
+
+[[models]]
+pid = "2087"
+name = "TP76I Pro"
+family = "supvan_tp76"
+
+# TP80 family
+[[models]]
+pid = "202e"
+name = "TP80A"
+family = "supvan_tp80"
+
+[[models]]
+pid = "2080"
+name = "TP80A Pro"
+family = "supvan_tp80"
+
+# TP86 family
+[[models]]
+pid = "202f"
+name = "TP86A"
+family = "supvan_tp86"
+
+[[models]]
+pid = "2081"
+name = "TP86A Pro"
+family = "supvan_tp86"
+
+# SP650 family
+[[models]]
+pid = "203e"
+name = "SP650"
+family = "supvan_sp650"
+
+# -- Bluetooth name patterns (substring match, case-insensitive) -------------
+#
+# Used for BT discovery (is_matching_bt_name) and family detection
+# (family_for_model_hint). The brand names "supvan" and "katasymbol" are
+# always accepted for discovery but don't select a specific family.
+
+[bt_patterns]
+supvan_t50 = ["t50", "t0117", "e10", "e11", "e12", "e16"]
+supvan_t80 = ["t80"]
+supvan_g = ["g11", "g15", "g18"]
+supvan_tp76 = ["tp76"]
+supvan_tp80 = ["tp80"]
+supvan_tp86 = ["tp86"]
+supvan_sp650 = ["sp650"]

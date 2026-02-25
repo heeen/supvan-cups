@@ -1,7 +1,7 @@
 //! USB HID device discovery via sysfs.
 //!
-//! Scans `/sys/class/hidraw/` for devices matching VID=0x1820, PID=0x2073
-//! (Supvan T50 Pro USB HID interface).
+//! Scans `/sys/class/hidraw/` for devices matching VID=0x1820 and a known
+//! Supvan USB PID (see `models::USB_MODELS`).
 //!
 //! URIs use the USB serial number for stability across hotplug:
 //! `usbhid://SERIAL` (e.g. `usbhid://7E1222120101`).
@@ -10,10 +10,11 @@
 use std::fs;
 use std::path::Path;
 
-const SUPVAN_USB_VID: &str = "1820";
-const SUPVAN_USB_PID: &str = "2073";
+use crate::models;
 
-/// Discover USB HID devices matching the Supvan T50 Pro.
+const SUPVAN_USB_VID: &str = "1820";
+
+/// Discover USB HID devices matching any known Supvan model.
 ///
 /// Calls `cb(device_info, device_uri, device_id)` for each match.
 /// Returns `true` if at least one device was found.
@@ -40,16 +41,8 @@ where
             continue;
         }
 
-        // The sysfs hierarchy for a USB HID device is:
-        //   /sys/class/hidraw/hidrawN/device -> ../../../0003:1820:2073.XXXX
-        // The USB device info is at:
-        //   /sys/class/hidraw/hidrawN/device/../../../idVendor
-        //   /sys/class/hidraw/hidrawN/device/../../../idProduct
-        //
-        // We walk up from the hidraw device symlink to find the USB device.
         let device_path = hidraw_dir.join(&*name_str).join("device");
 
-        // Try to find idVendor/idProduct by walking up the device tree
         let (vid, pid, serial) = match read_usb_ids(&device_path) {
             Some(ids) => ids,
             None => {
@@ -60,24 +53,32 @@ where
 
         log::debug!("usb_discover: {name_str}: VID={vid} PID={pid} serial={serial:?}");
 
-        if vid != SUPVAN_USB_VID || pid != SUPVAN_USB_PID {
+        if vid != SUPVAN_USB_VID {
             continue;
         }
+
+        let model = match models::model_by_pid(&pid) {
+            Some(m) => m,
+            None => {
+                log::debug!("usb_discover: {name_str}: unknown PID {pid}");
+                continue;
+            }
+        };
 
         let dev_path = format!("/dev/{name_str}");
         let uri = match &serial {
             Some(s) => format!("usbhid://{s}"),
             None => format!("usbhid://{dev_path}"),
         };
-        let info = "Supvan T50 Pro (USB)".to_string();
-        let device_id = "MFG:Supvan;MDL:T50 Pro;CMD:SUPVAN;";
+        let info = format!("Supvan {} (USB)", model.name);
+        let device_id = format!("MFG:Supvan;MDL:{};CMD:SUPVAN;", model.name);
 
         log::info!(
             "usb_discover: found {dev_path} (VID={vid}, PID={pid}, serial={serial:?}) -> {uri}"
         );
         found = true;
 
-        if !cb(&info, &uri, device_id) {
+        if !cb(&info, &uri, &device_id) {
             break;
         }
     }
@@ -103,7 +104,7 @@ pub fn find_first_device() -> Option<String> {
 
 /// Find the current `/dev/hidrawN` path for a device with the given serial number.
 ///
-/// Scans sysfs for a hidraw device matching VID/PID/serial.
+/// Scans sysfs for a hidraw device matching VID and any known PID with the given serial.
 pub fn find_device_by_serial(serial: &str) -> Option<String> {
     let mut path = None;
     scan_hidraw_paths(|dev_path, _vid, _pid, dev_serial| {
@@ -141,7 +142,7 @@ where
             None => continue,
         };
 
-        if vid != SUPVAN_USB_VID || pid != SUPVAN_USB_PID {
+        if vid != SUPVAN_USB_VID || models::model_by_pid(&pid).is_none() {
             continue;
         }
 

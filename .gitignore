@@ -14,3 +14,6 @@ __pycache__/
 *.rar
 *.exe
 
+# Total Recall memory (personal, session-specific)
+CLAUDE.local.md
+memory/

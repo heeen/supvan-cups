@@ -1,60 +1,21 @@
-//! PAPPL printer driver callback and media table.
+//! PAPPL printer driver callback and media helpers.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void, CStr};
 
 use pappl_sys::*;
 
 use crate::dither;
+use crate::models::{self, DriverFamily};
 use crate::raster;
 use crate::util::copy_to_c_buf;
 
-pub static DRIVER_NAME: &std::ffi::CStr = c"supvan_t50pro";
-
 const MAX_PAPPL_MEDIA: usize = 256;
 
-/// PWG self-describing media size names.
-pub static MEDIA_NAMES: &[&std::ffi::CStr] = &[
-    c"oe_40x30mm_40x30mm",
-    c"oe_40x40mm_40x40mm",
-    c"oe_40x50mm_40x50mm",
-    c"oe_40x60mm_40x60mm",
-    c"oe_40x70mm_40x70mm",
-    c"oe_40x80mm_40x80mm",
-    c"oe_30x15mm_30x15mm",
-    c"oe_30x20mm_30x20mm",
-    c"oe_30x30mm_30x30mm",
-    c"oe_30x40mm_30x40mm",
-    c"oe_48x30mm_48x30mm",
-    c"oe_48x45mm_48x45mm",
-    c"oe_48x70mm_48x70mm",
-    c"oe_25x25mm_25x25mm",
-    c"oe_50x30mm_50x30mm",
-];
-
-/// Dimensions in hundredths of mm (width, length).
-pub static MEDIA_SIZES: &[[c_int; 2]] = &[
-    [4000, 3000],
-    [4000, 4000],
-    [4000, 5000],
-    [4000, 6000],
-    [4000, 7000],
-    [4000, 8000],
-    [3000, 1500],
-    [3000, 2000],
-    [3000, 3000],
-    [3000, 4000],
-    [4800, 3000],
-    [4800, 4500],
-    [4800, 7000],
-    [2500, 2500],
-    [5000, 3000],
-];
-
 /// Find the best matching media index for given dimensions (in hundredths of mm).
-pub fn find_best_media(w_hmm: c_int, h_hmm: c_int) -> Option<usize> {
+pub fn find_best_media(family: &DriverFamily, w_hmm: c_int, h_hmm: c_int) -> Option<usize> {
     let mut best: Option<usize> = None;
     let mut best_dist = i64::MAX;
-    for (i, sz) in MEDIA_SIZES.iter().enumerate() {
+    for (i, sz) in family.media_sizes.iter().enumerate() {
         let dw = (sz[0] - w_hmm) as i64;
         let dh = (sz[1] - h_hmm) as i64;
         let dist = dw * dw + dh * dh;
@@ -66,11 +27,11 @@ pub fn find_best_media(w_hmm: c_int, h_hmm: c_int) -> Option<usize> {
     best
 }
 
-/// Fill a `pappl_media_col_t` from media index.
-pub fn fill_media_col(col: &mut pappl_media_col_t, idx: usize) {
-    copy_to_c_buf(&mut col.size_name, MEDIA_NAMES[idx].to_bytes());
-    col.size_width = MEDIA_SIZES[idx][0];
-    col.size_length = MEDIA_SIZES[idx][1];
+/// Fill a `pappl_media_col_t` from media index within a family.
+pub fn fill_media_col(family: &DriverFamily, col: &mut pappl_media_col_t, idx: usize) {
+    copy_to_c_buf(&mut col.size_name, family.media_names[idx].to_bytes());
+    col.size_width = family.media_sizes[idx][0];
+    col.size_length = family.media_sizes[idx][1];
     col.left_margin = 0;
     col.right_margin = 0;
     col.top_margin = 0;
@@ -79,7 +40,7 @@ pub fn fill_media_col(col: &mut pappl_media_col_t, idx: usize) {
     copy_to_c_buf(&mut col.type_, b"labels");
 }
 
-/// PAPPL driver callback — configures driver data for our printer.
+/// PAPPL driver callback — configures driver data for any Supvan family.
 pub unsafe extern "C" fn ks_driver_cb(
     _system: *mut pappl_system_t,
     driver_name: *const c_char,
@@ -93,27 +54,28 @@ pub unsafe extern "C" fn ks_driver_cb(
         return false;
     }
 
-    let name = std::ffi::CStr::from_ptr(driver_name);
-    if name != DRIVER_NAME {
-        return false;
-    }
+    let name = CStr::from_ptr(driver_name);
+    let family = match models::family_by_driver_name(name) {
+        Some(f) => f,
+        None => return false,
+    };
 
     let d = &mut *data;
 
     // Make and model
-    copy_to_c_buf(&mut d.make_and_model, b"Supvan T50 Pro");
+    copy_to_c_buf(&mut d.make_and_model, &family.make_and_model);
 
     // Format: PWG raster
     d.format = c"application/vnd.cups-raster".as_ptr();
     d.orient_default = ipp_orient_e_IPP_ORIENT_PORTRAIT;
     d.quality_default = ipp_quality_e_IPP_QUALITY_NORMAL;
 
-    // Resolution: 203x203 DPI
+    // Resolution
     d.num_resolution = 1;
-    d.x_resolution[0] = 203;
-    d.y_resolution[0] = 203;
-    d.x_default = 203;
-    d.y_default = 203;
+    d.x_resolution[0] = family.dpi;
+    d.y_resolution[0] = family.dpi;
+    d.x_default = family.dpi;
+    d.y_default = family.dpi;
 
     // Raster type
     d.raster_types = pappl_raster_type_e_PAPPL_PWG_RASTER_TYPE_BLACK_1;
@@ -148,14 +110,14 @@ pub unsafe extern "C" fn ks_driver_cb(
     d.speed_supported[1] = 0;
 
     // Media sizes
-    let num_media = MEDIA_NAMES.len().min(MAX_PAPPL_MEDIA) as c_int;
+    let num_media = family.media_names.len().min(MAX_PAPPL_MEDIA) as c_int;
     d.num_media = num_media;
-    for (i, name) in MEDIA_NAMES.iter().enumerate().take(num_media as usize) {
+    for (i, name) in family.media_names.iter().enumerate().take(num_media as usize) {
         d.media[i] = name.as_ptr();
     }
 
-    // Default media: 40x30mm
-    fill_media_col(&mut d.media_default, 0);
+    // Default media: first entry
+    fill_media_col(family, &mut d.media_default, 0);
 
     // Sources / types
     d.num_source = 1;
@@ -187,22 +149,36 @@ pub unsafe extern "C" fn ks_driver_cb(
     true
 }
 
-/// Auto-add callback: return our driver name for btrfcomm:// and usbhid:// devices.
+/// Auto-add callback: determine driver name from device_id MDL field.
 pub unsafe extern "C" fn ks_autoadd_cb(
     _device_info: *const c_char,
     device_uri: *const c_char,
-    _device_id: *const c_char,
+    device_id: *const c_char,
     _data: *mut c_void,
 ) -> *const c_char {
     if device_uri.is_null() {
         return std::ptr::null();
     }
 
-    let uri = std::ffi::CStr::from_ptr(device_uri);
-    if let Ok(s) = uri.to_str() {
-        if s.starts_with("btrfcomm://") || s.starts_with("usbhid://") {
-            return DRIVER_NAME.as_ptr();
+    let uri = match CStr::from_ptr(device_uri).to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null(),
+    };
+
+    if !uri.starts_with("btrfcomm://") && !uri.starts_with("usbhid://") {
+        return std::ptr::null();
+    }
+
+    // Try to determine family from MDL in device_id
+    if !device_id.is_null() {
+        if let Ok(did) = CStr::from_ptr(device_id).to_str() {
+            if let Some(mdl) = models::parse_mdl(did) {
+                let family = models::family_for_model_hint(mdl);
+                return family.driver_name.as_ptr();
+            }
         }
     }
-    std::ptr::null()
+
+    // Fallback: T50 family
+    models::default_family().driver_name.as_ptr()
 }

@@ -12,6 +12,8 @@ supvan-proto = { workspace = true }
 pappl-sys = { path = "../pappl-sys" }
 log = { workspace = true }
 env_logger = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 dbus = "0.9"
 dbus-crossroads = "0.5"
 libc = "0.2"
