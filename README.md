@@ -1,24 +1,36 @@
-# Supvan T50 Pro Printer Driver
+# Supvan Printer Driver
 
-Linux printer driver for the Supvan T50 Pro thermal label printer
-(also compatible with Katasymbol M50 Pro). Provides an IPP Everywhere
-printer application via [PAPPL](https://www.msweet.org/pappl/) and a
-command-line diagnostic tool.
+Linux printer driver for Supvan thermal label printers. Provides an
+IPP Everywhere printer application via [PAPPL](https://www.msweet.org/pappl/)
+and a command-line diagnostic tool.
 
 The printer protocol was reverse-engineered from the Katasymbol Android
 app (v1.4.20).
 
-## Compatible Devices
+## Supported Models
 
-- Supvan T50 Plus / T50 series
-- Katasymbol M50 Pro
-- Other devices advertising Bluetooth names containing T50, T0117,
-  Supvan, or Katasymbol
+All models use USB VID `0x1820`. Bluetooth and USB HID are auto-discovered.
+
+| Family | Models | DPI | Printhead |
+|--------|--------|-----|-----------|
+| T50 Series | T50M, T50M Pro, T50M Plus, T50s, T50s Pro | 203 | 48mm / 384 dots |
+| T80 Series | T80M, T80M Pro | 201 | 72mm / 568 dots |
+| G Series | G11, G15, G18, G18 Pro | 193 | 25mm / 190 dots |
+| TP76 Series | TP76I, TP76I Pro | 305 | 76mm / 912 dots |
+| TP80 Series | TP80A, TP80A Pro | 305 | 80mm / 960 dots |
+| TP86 Series | TP86A, TP86A Pro | 305 | 86mm / 1032 dots |
+| SP650 | SP650 | 203 | 48mm / 384 dots |
+
+BT-only models (E10, E11, E12, E16) are also supported via the T50 driver.
+Katasymbol-branded equivalents (e.g. M50 Pro) work as their Supvan counterparts.
 
 Supported transports:
 
 - **Bluetooth** — RFCOMM (`btrfcomm://` scheme), auto-discovered via BlueZ D-Bus
-- **USB HID** — hidraw (`usbhid://` scheme), VID `0x1820` / PID `0x2073`
+- **USB HID** — hidraw (`usbhid://` scheme), auto-discovered via sysfs
+
+Model data is defined in `data/models.toml` and can be extended without
+recompilation.
 
 ## Crate Structure
 
