@@ -37,6 +37,7 @@ pub const PAPPL_PREASON_COVER_OPEN: u32 = 0x0002;
 pub const PAPPL_PREASON_MEDIA_EMPTY: u32 = 0x0080;
 pub const PAPPL_PREASON_MEDIA_JAM: u32 = 0x0100;
 pub const PAPPL_PREASON_MEDIA_NEEDED: u32 = 0x0400;
+pub const PAPPL_PREASON_OFFLINE: u32 = 0x0800;
 
 impl KsDevice {
     /// Open a Bluetooth RFCOMM connection to the printer at `addr`.

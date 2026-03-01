@@ -10,7 +10,7 @@ use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
 use crate::job::KsJob;
 use crate::models;
-use crate::printer_device::KsDevice;
+use crate::printer_device::{KsDevice, PAPPL_PREASON_NONE, PAPPL_PREASON_OFFLINE};
 use crate::util::copy_to_c_buf;
 
 /// Helper: get printer darkness setting (0-100).
@@ -206,8 +206,12 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
 
     let device = papplPrinterOpenDevice(printer);
     if device.is_null() {
+        papplPrinterSetReasons(printer, PAPPL_PREASON_OFFLINE, PAPPL_PREASON_NONE);
         return false;
     }
+
+    // Device reachable — clear offline flag
+    papplPrinterSetReasons(printer, PAPPL_PREASON_NONE, PAPPL_PREASON_OFFLINE);
 
     let dev_ptr = papplDeviceGetData(device) as *mut KsDevice;
     if dev_ptr.is_null() {
