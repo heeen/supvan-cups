@@ -5,7 +5,7 @@
 //!
 //! URIs use the USB serial number for stability across hotplug:
 //! `usbhid://SERIAL` (e.g. `usbhid://7E1222120101`).
-//! Falls back to `usbhid:///dev/hidrawN` if no serial is available.
+//! Devices without a serial number are skipped.
 
 use std::fs;
 use std::path::Path;
@@ -66,10 +66,14 @@ where
         };
 
         let dev_path = format!("/dev/{name_str}");
-        let uri = match &serial {
-            Some(s) => format!("usbhid://{s}"),
-            None => format!("usbhid://{dev_path}"),
+        let serial = match serial {
+            Some(s) => s,
+            None => {
+                log::warn!("usb_discover: {name_str}: no serial number, skipping");
+                continue;
+            }
         };
+        let uri = format!("usbhid://{serial}");
         let info = format!("Supvan {} (USB)", model.name);
         let device_id = format!("MFG:Supvan;MDL:{};CMD:SUPVAN;", model.name);
 
@@ -89,17 +93,6 @@ where
 /// Quick check: is any Supvan USB HID device present?
 pub fn has_device() -> bool {
     discover(|_, _, _| true)
-}
-
-/// Return the device path of the first Supvan USB HID device (e.g. "/dev/hidraw10").
-/// Legacy fallback for URIs without serial numbers.
-pub fn find_first_device() -> Option<String> {
-    let mut path = None;
-    scan_hidraw_paths(|dev_path, _vid, _pid, _serial| {
-        path = Some(dev_path.to_string());
-        false // stop after first
-    });
-    path
 }
 
 /// Find the current `/dev/hidrawN` path for a device with the given serial number.

@@ -160,11 +160,7 @@ pub unsafe extern "C" fn usb_list_cb(
     false
 }
 
-/// Open callback: open the USB HID device for usbhid://.
-///
-/// Supports two URI formats:
-/// - `usbhid://SERIAL` — resolve by serial number (stable across hotplug)
-/// - `usbhid:///dev/hidrawN` — legacy fallback, resolve by VID/PID scan
+/// Open callback: open the USB HID device for usbhid://SERIAL.
 pub unsafe extern "C" fn usb_open_cb(
     device: *mut pappl_device_t,
     device_uri: *const c_char,
@@ -179,30 +175,16 @@ pub unsafe extern "C" fn usb_open_cb(
         Err(_) => return false,
     };
 
-    let rest = match uri_str.strip_prefix("usbhid://") {
-        Some(r) => r,
+    let serial = match uri_str.strip_prefix("usbhid://") {
+        Some(s) => s,
         None => return false,
     };
 
-    // Determine resolution strategy from URI format:
-    // - "/dev/hidrawN" (starts with '/') → legacy, resolve by VID/PID scan
-    // - "SERIAL" (no leading '/') → resolve by serial number
-    let hidraw_path = if rest.starts_with('/') {
-        log::info!("usb_open_cb: legacy URI {uri_str}, resolving by VID/PID scan");
-        usb_discover::find_first_device()
-    } else {
-        log::info!("usb_open_cb: resolving serial '{rest}' to hidraw path");
-        usb_discover::find_device_by_serial(rest)
-            .or_else(|| {
-                log::warn!("usb_open_cb: serial '{rest}' not found, trying VID/PID fallback");
-                usb_discover::find_first_device()
-            })
-    };
-
-    let hidraw_path = match hidraw_path {
+    log::info!("usb_open_cb: resolving serial '{serial}' to hidraw path");
+    let hidraw_path = match usb_discover::find_device_by_serial(serial) {
         Some(p) => p,
         None => {
-            log::warn!("usb_open_cb: no Supvan USB device found");
+            log::warn!("usb_open_cb: serial '{serial}' not found");
             return false;
         }
     };
