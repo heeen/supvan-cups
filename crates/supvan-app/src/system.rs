@@ -62,7 +62,7 @@ pub unsafe extern "C" fn ks_system_cb(
         8631,
         std::ptr::null(), // subtypes
         std::ptr::null(), // spooldir
-        std::ptr::null(), // logfile
+        c"-".as_ptr(), // logfile: "-" = stderr
         pappl_loglevel_e_PAPPL_LOGLEVEL_DEBUG,
         std::ptr::null(), // auth_service
         false,            // tls_only
