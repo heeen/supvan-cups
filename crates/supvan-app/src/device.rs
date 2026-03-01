@@ -4,6 +4,7 @@
 //! They bridge between PAPPL's device model and our KsDevice type.
 
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::sync::Mutex;
 
 use pappl_sys::*;
 
@@ -11,6 +12,41 @@ use crate::battery_provider;
 use crate::discover;
 use crate::printer_device::{KsDevice, PAPPL_PREASON_OTHER};
 use crate::usb_discover;
+
+// --- BT connection cache ---
+//
+// PAPPL opens/closes the device for every status poll and print job.
+// For BT, each cycle is a full RFCOMM connect/disconnect which destabilizes
+// the link. We cache the last connection and reuse it if the address matches.
+
+static BT_CONN_CACHE: Mutex<Option<Box<KsDevice>>> = Mutex::new(None);
+
+/// Take a cached BT connection for `addr`, or open a new one.
+fn bt_conn_open(addr: &str) -> Option<Box<KsDevice>> {
+    if let Ok(mut cache) = BT_CONN_CACHE.lock() {
+        if let Some(dev) = cache.take() {
+            if dev.addr.as_deref() == Some(addr) {
+                log::info!("bt_conn_open: reusing cached connection to {addr}");
+                return Some(dev);
+            }
+            log::info!("bt_conn_open: dropping cached connection (different addr)");
+            drop(dev);
+        }
+    }
+    KsDevice::open(addr)
+}
+
+/// Return a BT connection to the cache instead of dropping it.
+fn bt_conn_close(dev: Box<KsDevice>) {
+    if let Ok(mut cache) = BT_CONN_CACHE.lock() {
+        log::info!(
+            "bt_conn_close: caching connection to {}",
+            dev.addr.as_deref().unwrap_or("?")
+        );
+        // Drop any previous cached connection
+        *cache = Some(dev);
+    }
+}
 
 // --- Bluetooth RFCOMM callbacks ---
 
@@ -75,7 +111,7 @@ pub unsafe extern "C" fn bt_open_cb(
         None => return false,
     };
 
-    let dev = match KsDevice::open(addr) {
+    let dev = match bt_conn_open(addr) {
         Some(d) => d,
         None => return false,
     };
@@ -88,15 +124,12 @@ pub unsafe extern "C" fn bt_open_cb(
     true
 }
 
-/// Close callback: disconnect and free the KsDevice.
+/// Close callback: cache the BT connection for reuse instead of disconnecting.
 pub unsafe extern "C" fn bt_close_cb(device: *mut pappl_device_t) {
     let ptr = papplDeviceGetData(device) as *mut KsDevice;
     if !ptr.is_null() {
         let dev = Box::from_raw(ptr);
-        if let (Some(h), Some(addr)) = (battery_provider::handle(), dev.addr.as_deref()) {
-            h.remove_device(addr);
-        }
-        drop(dev);
+        bt_conn_close(dev);
     }
 }
 
