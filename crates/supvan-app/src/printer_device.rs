@@ -250,6 +250,44 @@ impl KsDevice {
         self.printer.is_none()
     }
 
+    /// Check if the underlying socket/fd is still connected.
+    ///
+    /// Uses a zero-byte `recv(MSG_PEEK | MSG_DONTWAIT)` for sockets or
+    /// `poll()` for file descriptors. Returns `false` if the transport is
+    /// dead (ENOTCONN, POLLHUP, etc).
+    pub fn is_alive(&self) -> bool {
+        let fd = match self.transport_fd {
+            Some(fd) => fd,
+            None => return false,
+        };
+        if self.use_socket_io {
+            let ret = unsafe {
+                libc::recv(
+                    fd,
+                    std::ptr::null_mut(),
+                    0,
+                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
+                )
+            };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                // EAGAIN/EWOULDBLOCK means socket is alive but no data — that's fine
+                err.raw_os_error() == Some(libc::EAGAIN)
+                    || err.raw_os_error() == Some(libc::EWOULDBLOCK)
+            } else {
+                true
+            }
+        } else {
+            let mut pfd = libc::pollfd {
+                fd,
+                events: 0,
+                revents: 0,
+            };
+            unsafe { libc::poll(&mut pfd, 1, 0) };
+            pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
+        }
+    }
+
 }
 
 impl Drop for KsDevice {

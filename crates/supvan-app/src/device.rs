@@ -26,24 +26,31 @@ fn bt_conn_open(addr: &str) -> Option<Box<KsDevice>> {
     if let Ok(mut cache) = BT_CONN_CACHE.lock() {
         if let Some(dev) = cache.take() {
             if dev.addr.as_deref() == Some(addr) {
-                log::info!("bt_conn_open: reusing cached connection to {addr}");
-                return Some(dev);
+                if dev.is_alive() {
+                    log::info!("bt_conn_open: reusing cached connection to {addr}");
+                    return Some(dev);
+                }
+                log::info!("bt_conn_open: cached connection to {addr} is dead, reconnecting");
+                drop(dev);
+            } else {
+                log::info!("bt_conn_open: dropping cached connection (different addr)");
+                drop(dev);
             }
-            log::info!("bt_conn_open: dropping cached connection (different addr)");
-            drop(dev);
         }
     }
     KsDevice::open(addr)
 }
 
 /// Return a BT connection to the cache instead of dropping it.
+/// Drops the connection if the socket is dead.
 fn bt_conn_close(dev: Box<KsDevice>) {
+    let addr = dev.addr.as_deref().unwrap_or("?");
+    if !dev.is_alive() {
+        log::info!("bt_conn_close: connection to {addr} is dead, dropping");
+        return;
+    }
     if let Ok(mut cache) = BT_CONN_CACHE.lock() {
-        log::info!(
-            "bt_conn_close: caching connection to {}",
-            dev.addr.as_deref().unwrap_or("?")
-        );
-        // Drop any previous cached connection
+        log::info!("bt_conn_close: caching connection to {addr}");
         *cache = Some(dev);
     }
 }
