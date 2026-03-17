@@ -4,7 +4,9 @@
 //! They bridge between PAPPL's device model and our KsDevice type.
 
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pappl_sys::*;
 
@@ -18,8 +20,38 @@ use crate::usb_discover;
 // PAPPL opens/closes the device for every status poll and print job.
 // For BT, each cycle is a full RFCOMM connect/disconnect which destabilizes
 // the link. We cache the last connection and reuse it if the address matches.
+//
+// To avoid draining the printer battery, the cache has an idle timeout:
+// connections are only cached while a print job is recent. After the timeout,
+// connections are dropped so the printer can sleep. Configurable via
+// SUPVAN_BT_IDLE_TIMEOUT (seconds, default 120).
 
 static BT_CONN_CACHE: Mutex<Option<Box<KsDevice>>> = Mutex::new(None);
+
+/// Epoch seconds of the last print job start. 0 = no job yet.
+static LAST_PRINT_TIME: AtomicU64 = AtomicU64::new(0);
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+}
+
+fn bt_idle_timeout() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("SUPVAN_BT_IDLE_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120)
+    })
+}
+
+/// Record that a print job is active (call from rstartjob).
+pub fn bt_touch_print_time() {
+    LAST_PRINT_TIME.store(now_secs(), Ordering::Relaxed);
+}
 
 /// Take a cached BT connection for `addr`, or open a new one.
 fn bt_conn_open(addr: &str) -> Option<Box<KsDevice>> {
@@ -42,15 +74,25 @@ fn bt_conn_open(addr: &str) -> Option<Box<KsDevice>> {
 }
 
 /// Return a BT connection to the cache instead of dropping it.
-/// Drops the connection if the socket is dead.
+/// Drops the connection if the socket is dead or idle too long (so the
+/// printer can sleep and save battery).
 fn bt_conn_close(dev: Box<KsDevice>) {
     let addr = dev.addr.as_deref().unwrap_or("?");
     if !dev.is_alive() {
         log::info!("bt_conn_close: connection to {addr} is dead, dropping");
         return;
     }
+    let last = LAST_PRINT_TIME.load(Ordering::Relaxed);
+    let idle = now_secs().saturating_sub(last);
+    if last == 0 || idle > bt_idle_timeout() {
+        log::info!(
+            "bt_conn_close: idle {idle}s > timeout {}s, dropping connection to {addr}",
+            bt_idle_timeout()
+        );
+        return;
+    }
     if let Ok(mut cache) = BT_CONN_CACHE.lock() {
-        log::info!("bt_conn_close: caching connection to {addr}");
+        log::info!("bt_conn_close: caching connection to {addr} (idle {idle}s)");
         *cache = Some(dev);
     }
 }
