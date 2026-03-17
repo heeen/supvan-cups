@@ -119,6 +119,7 @@ impl KsJob {
         self.raster_data[offset..offset + copy_len].copy_from_slice(&line[..copy_len]);
         self.lines_received += 1;
 
+        #[allow(clippy::manual_is_multiple_of)]
         if self.lines_received % 100 == 0 {
             log::debug!(
                 "KsJob::write_line: received {} / {} lines",
@@ -161,7 +162,10 @@ impl KsJob {
             raster_to_column_major(&self.raster_data, self.width, self.height);
 
         // 2. Center in printhead canvas
-        log::debug!("KsJob::end_page: center_in_printhead ({}dots)", self.printhead_width_dots);
+        log::debug!(
+            "KsJob::end_page: center_in_printhead ({}dots)",
+            self.printhead_width_dots
+        );
         let (canvas, canvas_bpl) =
             center_in_printhead(&col_data, num_cols, self.width, self.printhead_width_dots);
 
@@ -233,11 +237,13 @@ impl KsJob {
             log::info!("KsJob::end_page: mock — skipping BT transfer");
         }
 
-        // Clear raster buffer for next page
+        true
+    }
+
+    /// Clear the raster buffer for the next page.
+    pub fn clear_page(&mut self) {
         self.raster_data.fill(0);
         self.lines_received = 0;
-
-        true
     }
 
     /// End a print job: wait for completion.

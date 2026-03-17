@@ -5,6 +5,7 @@ use std::ffi::{c_void, CStr};
 use pappl_sys::*;
 
 use crate::battery_provider;
+use crate::device;
 use crate::dither::dither_line;
 use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
@@ -52,6 +53,8 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
     let dev = &*dev_ptr;
     let opts = &*options;
 
+    device::bt_touch_print_time();
+
     let w = opts.header.cupsWidth;
     let h = opts.header.cupsHeight;
     let bpl = if opts.header.cupsBitsPerPixel == 8 {
@@ -76,8 +79,7 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
             papplLogJob(
                 job,
                 pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR,
-                CStr::from_bytes_with_nul(b"Job start failed (device not ready, timeout, or printer error - check RUST_LOG=info)\0")
-                    .unwrap()
+                c"Job start failed (device not ready, timeout, or printer error - check RUST_LOG=info)"
                     .as_ptr(),
             );
             papplJobSetReasons(
@@ -147,35 +149,46 @@ pub unsafe extern "C" fn ks_rwriteline_cb(
 }
 
 /// End-page callback.
+///
+/// Handles copies: PAPPL advertises `copies-supported 1-999` for non-raster
+/// formats, so CUPS may send only one page and set `options->copies > 1`.
+/// We repeat the page transfer for each copy.
 pub unsafe extern "C" fn ks_rendpage_cb(
     job: *mut pappl_job_t,
-    _options: *mut pappl_pr_options_t,
+    options: *mut pappl_pr_options_t,
     device: *mut pappl_device_t,
     _page: u32,
 ) -> bool {
     let job_ptr = papplJobGetData(job) as *mut KsJob;
     let dev_ptr = papplDeviceGetData(device) as *mut KsDevice;
-    if job_ptr.is_null() || dev_ptr.is_null() {
+    if job_ptr.is_null() || dev_ptr.is_null() || options.is_null() {
         return false;
     }
 
     let ks_job = &mut *job_ptr;
     let dev = &*dev_ptr;
-    if !ks_job.end_page(dev) {
-        papplLogJob(
-            job,
-            pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR,
-            CStr::from_bytes_with_nul(b"Page transfer failed (device error, timeout, or transfer - check RUST_LOG=info)\0")
-                .unwrap()
-                .as_ptr(),
-        );
-        papplJobSetReasons(
-            job,
-            pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE,
-            pappl_jreason_e_PAPPL_JREASON_NONE,
-        );
-        return false;
+    let copies = ((*options).copies as u32).max(1);
+
+    for copy in 0..copies {
+        if copies > 1 {
+            log::info!("ks_rendpage_cb: printing copy {}/{copies}", copy + 1);
+        }
+        if !ks_job.end_page(dev) {
+            papplLogJob(
+                job,
+                pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR,
+                c"Page transfer failed (device error, timeout, or transfer - check RUST_LOG=info)"
+                    .as_ptr(),
+            );
+            papplJobSetReasons(
+                job,
+                pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE,
+                pappl_jreason_e_PAPPL_JREASON_NONE,
+            );
+            return false;
+        }
     }
+    ks_job.clear_page();
     true
 }
 
