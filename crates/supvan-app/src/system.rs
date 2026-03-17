@@ -62,7 +62,7 @@ pub unsafe extern "C" fn ks_system_cb(
         8631,
         std::ptr::null(), // subtypes
         std::ptr::null(), // spooldir
-        c"-".as_ptr(), // logfile: "-" = stderr
+        c"-".as_ptr(),    // logfile: "-" = stderr
         pappl_loglevel_e_PAPPL_LOGLEVEL_DEBUG,
         std::ptr::null(), // auth_service
         false,            // tls_only
@@ -138,6 +138,8 @@ pub unsafe extern "C" fn ks_system_cb(
     // Discover and auto-add printers. We must call this ourselves because
     // PAPPL's _papplMainloopRunServer only auto-adds when it handles
     // LoadState itself (which we do here instead).
+    // papplSystemCreatePrinters was added in PAPPL 1.4.
+    #[cfg(pappl_1_4)]
     papplSystemCreatePrinters(
         system,
         pappl_devtype_e_PAPPL_DEVTYPE_LOCAL,
@@ -158,10 +160,7 @@ unsafe fn prune_stale_usb_printers(system: *mut pappl_system_t) {
     // Collect printer pointers first — can't delete during iteration.
     let mut stale: Vec<*mut pappl_printer_t> = Vec::new();
 
-    unsafe extern "C" fn collect_cb(
-        printer: *mut pappl_printer_t,
-        data: *mut c_void,
-    ) {
+    unsafe extern "C" fn collect_cb(printer: *mut pappl_printer_t, data: *mut c_void) {
         let stale = &mut *(data as *mut Vec<*mut pappl_printer_t>);
         let uri_ptr = papplPrinterGetDeviceURI(printer);
         if uri_ptr.is_null() {

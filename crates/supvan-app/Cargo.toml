@@ -7,6 +7,9 @@ edition.workspace = true
 name = "supvan-printer-app"
 path = "src/main.rs"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pappl_1_4)'] }
+
 [dependencies]
 supvan-proto = { workspace = true }
 pappl-sys = { path = "../pappl-sys" }

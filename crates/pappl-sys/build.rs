@@ -39,4 +39,21 @@ fn main() {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("failed to write bindings");
+
+    // Emit cfg flags based on PAPPL version for optional API usage.
+    // papplSystemCreatePrinters was added in PAPPL 1.4.
+    {
+        let parts: Vec<u32> = pappl
+            .version
+            .split('.')
+            .filter_map(|s: &str| s.parse().ok())
+            .collect();
+        let (major, minor) = (
+            parts.first().copied().unwrap_or(0),
+            parts.get(1).copied().unwrap_or(0),
+        );
+        if major > 1 || (major == 1 && minor >= 4) {
+            println!("cargo:rustc-cfg=pappl_1_4");
+        }
+    }
 }
