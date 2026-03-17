@@ -29,7 +29,6 @@ pub struct DriverFamily {
 pub struct UsbModel {
     pub pid: String,
     pub name: String,
-    pub family_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,8 +88,8 @@ fn registry() -> &'static Registry {
 /// Must be called exactly once, before any other function in this module.
 pub fn load() {
     let path = find_toml_path();
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+    let contents =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
     let toml: ModelsToml =
         toml::from_str(&contents).unwrap_or_else(|e| panic!("failed to parse {path}: {e}"));
 
@@ -149,7 +148,6 @@ pub fn load() {
             UsbModel {
                 pid: m.pid.clone(),
                 name: m.name.clone(),
-                family_name: m.family.clone(),
             }
         })
         .collect();
@@ -157,9 +155,9 @@ pub fn load() {
     // Flatten bt_patterns: (pattern, family_idx), sorted longest-first
     let mut bt_patterns: Vec<(String, usize)> = Vec::new();
     for (family_name, patterns) in &toml.bt_patterns {
-        let idx = *family_index.get(family_name.as_str()).unwrap_or_else(|| {
-            panic!("bt_patterns references unknown family '{family_name}'")
-        });
+        let idx = *family_index
+            .get(family_name.as_str())
+            .unwrap_or_else(|| panic!("bt_patterns references unknown family '{family_name}'"));
         for pattern in patterns {
             bt_patterns.push((pattern.clone(), idx));
         }

@@ -21,7 +21,6 @@ const BATTERY_PROVIDER_IFACE: &str = "org.bluez.BatteryProvider1";
 enum BatteryCmd {
     Add { addr: String, percentage: u8 },
     Update { addr: String, percentage: u8 },
-    Remove { addr: String },
     Shutdown,
 }
 
@@ -50,12 +49,6 @@ impl BatteryProviderHandle {
             percentage,
         });
     }
-
-    pub fn remove_device(&self, addr: &str) {
-        let _ = self.tx.send(BatteryCmd::Remove {
-            addr: addr.to_string(),
-        });
-    }
 }
 
 impl Drop for BatteryProviderHandle {
@@ -70,7 +63,7 @@ static HANDLE: OnceLock<Option<BatteryProviderHandle>> = OnceLock::new();
 ///
 /// Returns `None` if the D-Bus provider could not be started (non-fatal).
 pub fn handle() -> Option<&'static BatteryProviderHandle> {
-    HANDLE.get_or_init(|| start()).as_ref()
+    HANDLE.get_or_init(start).as_ref()
 }
 
 /// Convert `"AA:BB:CC:DD:EE:FF"` to `"/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"`.
@@ -87,8 +80,8 @@ fn bt_addr_to_provider_path(addr: &str) -> Path<'static> {
 
 /// Emit a PropertiesChanged signal for the Percentage property.
 fn emit_percentage_changed(conn: &SyncConnection, path: &Path<'_>, percentage: u8) {
-    use dbus::blocking::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged;
     use dbus::arg::Variant;
+    use dbus::blocking::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged;
     use dbus::message::SignalArgs;
 
     let mut changed = std::collections::HashMap::new();
@@ -162,15 +155,14 @@ fn run_provider(conn: Arc<SyncConnection>, rx: mpsc::Receiver<BatteryCmd>) {
     let objmgr_iface = cr.object_manager();
 
     // Register the BatteryProvider1 interface template
-    let battery_iface: IfaceToken<DeviceState> =
-        cr.register(BATTERY_PROVIDER_IFACE, |b| {
-            b.property("Percentage")
-                .get(|_, state: &mut DeviceState| Ok(state.percentage));
-            b.property("Device")
-                .get(|_, state: &mut DeviceState| Ok(state.bluez_path.clone()));
-            b.property("Source")
-                .get(|_, _state: &mut DeviceState| Ok("supvan-printer-app".to_string()));
-        });
+    let battery_iface: IfaceToken<DeviceState> = cr.register(BATTERY_PROVIDER_IFACE, |b| {
+        b.property("Percentage")
+            .get(|_, state: &mut DeviceState| Ok(state.percentage));
+        b.property("Device")
+            .get(|_, state: &mut DeviceState| Ok(state.bluez_path.clone()));
+        b.property("Source")
+            .get(|_, _state: &mut DeviceState| Ok("supvan-printer-app".to_string()));
+    });
 
     // Root object with ObjectManager interface
     cr.insert(PROVIDER_ROOT, &[objmgr_iface], ());
@@ -234,16 +226,6 @@ fn run_provider(conn: Arc<SyncConnection>, rx: mpsc::Receiver<BatteryCmd>) {
                                 emit_percentage_changed(&conn, &provider_path, percentage);
                             }
                         }
-                    }
-                }
-
-                Ok(BatteryCmd::Remove { addr }) => {
-                    let provider_path = bt_addr_to_provider_path(&addr);
-
-                    log::info!("battery_provider: remove {addr} at {provider_path}");
-
-                    if let Ok(mut cr) = cr.lock() {
-                        let _: Option<DeviceState> = cr.remove(&provider_path);
                     }
                 }
 

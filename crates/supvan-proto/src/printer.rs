@@ -149,11 +149,7 @@ impl Printer {
             self.transport
                 .send_cmd_two(CMD_NEXT_ZIPPEDBULK, 512, num_packets as u16)?
         } else {
-            log::info!(
-                "transfer: {} bytes, speed={}",
-                compressed.len(),
-                speed
-            );
+            log::info!("transfer: {} bytes, speed={}", compressed.len(), speed);
             self.transport
                 .send_cmd(CMD_NEXT_ZIPPEDBULK, compressed_len)?
         };

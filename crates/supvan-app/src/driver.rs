@@ -112,7 +112,12 @@ pub unsafe extern "C" fn ks_driver_cb(
     // Media sizes
     let num_media = family.media_names.len().min(MAX_PAPPL_MEDIA) as c_int;
     d.num_media = num_media;
-    for (i, name) in family.media_names.iter().enumerate().take(num_media as usize) {
+    for (i, name) in family
+        .media_names
+        .iter()
+        .enumerate()
+        .take(num_media as usize)
+    {
         d.media[i] = name.as_ptr();
     }
 

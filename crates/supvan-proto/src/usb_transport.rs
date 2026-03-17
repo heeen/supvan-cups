@@ -109,14 +109,23 @@ impl UsbHidTransport {
                 .position(|&b| b == 0)
                 .unwrap_or(resp.len() - 40);
             let s = String::from_utf8_lossy(&resp[40..40 + end]).to_string();
-            if s.is_empty() { None } else { Some(s) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
         } else {
             None
         };
 
         log::info!(
             "USB material: {}x{}mm gap={}mm type={} sn={} dev_sn={:?}",
-            width_mm, height_mm, gap_mm, label_type, sn, dev_sn
+            width_mm,
+            height_mm,
+            gap_mm,
+            label_type,
+            sn,
+            dev_sn
         );
 
         Some(MaterialInfo {

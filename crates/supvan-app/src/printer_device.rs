@@ -287,7 +287,6 @@ impl KsDevice {
             pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
         }
     }
-
 }
 
 impl Drop for KsDevice {

@@ -38,7 +38,9 @@ impl Transport for BtTransport {
         let mut last_resp = None;
         for (i, frame) in frames.iter().enumerate() {
             let is_last = i == frames.len() - 1;
-            let resp = self.sock.send_data_frame(frame, is_last && read_final_response)?;
+            let resp = self
+                .sock
+                .send_data_frame(frame, is_last && read_final_response)?;
             if is_last {
                 last_resp = resp;
             }
