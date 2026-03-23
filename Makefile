@@ -6,15 +6,17 @@ UNITDIR  ?= $(PREFIX)/lib/systemd/user
 UDEVDIR  ?= $(PREFIX)/lib/udev/rules.d
 DBUSDIR  ?= /etc/dbus-1/system.d
 
-BINARY   := target/release/supvan-printer-app
+BINARY      := target/release/supvan-printer-app
+BINARY_CLI  := target/release/supvan-cli
 
 .PHONY: build install uninstall
 
 build:
-	cargo build --release --bin supvan-printer-app
+	cargo build --release
 
-install: $(BINARY)
+install: $(BINARY) $(BINARY_CLI)
 	install -Dm755 $(BINARY)                              $(DESTDIR)$(BINDIR)/supvan-printer-app
+	install -Dm755 $(BINARY_CLI)                          $(DESTDIR)$(BINDIR)/supvan-cli
 	install -Dm644 data/models.toml                       $(DESTDIR)$(DATADIR)/models.toml
 	install -Dm644 supvan-printer-app.service             $(DESTDIR)$(UNITDIR)/supvan-printer-app.service
 	install -Dm755 etc/cups-cleanup.sh                    $(DESTDIR)$(LIBDIR)/cups-cleanup.sh
@@ -24,6 +26,7 @@ install: $(BINARY)
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/supvan-printer-app
+	rm -f $(DESTDIR)$(BINDIR)/supvan-cli
 	rm -f $(DESTDIR)$(DATADIR)/models.toml
 	rm -f $(DESTDIR)$(UNITDIR)/supvan-printer-app.service
 	rm -f $(DESTDIR)$(LIBDIR)/cups-cleanup.sh
