@@ -172,12 +172,12 @@ unsafe fn prune_stale_usb_printers(system: *mut pappl_system_t) {
             Err(_) => return,
         };
 
-        let serial = match uri_str.strip_prefix("usbhid://") {
+        let id = match uri_str.strip_prefix("usbhid://") {
             Some(s) => s,
             None => return, // not a USB printer
         };
 
-        let device_present = usb_discover::find_device_by_serial(serial).is_some();
+        let device_present = usb_discover::find_device_by_id(id).is_some();
 
         if !device_present {
             log::info!("Pruning stale USB printer: {uri_str}");

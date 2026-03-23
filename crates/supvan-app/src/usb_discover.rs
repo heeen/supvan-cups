@@ -5,7 +5,8 @@
 //!
 //! URIs use the USB serial number for stability across hotplug:
 //! `usbhid://SERIAL` (e.g. `usbhid://7E1222120101`).
-//! Devices without a serial number are skipped.
+//! Devices without a serial number use a bus-topology URI instead:
+//! `usbhid://bus:BUSNUM-DEVPATH` (e.g. `usbhid://bus:1-2.3`).
 
 use std::fs;
 use std::path::Path;
@@ -43,7 +44,7 @@ where
 
         let device_path = hidraw_dir.join(&*name_str).join("device");
 
-        let (vid, pid, serial) = match read_usb_ids(&device_path) {
+        let ids = match read_usb_ids(&device_path) {
             Some(ids) => ids,
             None => {
                 log::debug!("usb_discover: {name_str}: no USB IDs found");
@@ -51,34 +52,39 @@ where
             }
         };
 
-        log::debug!("usb_discover: {name_str}: VID={vid} PID={pid} serial={serial:?}");
+        log::debug!(
+            "usb_discover: {name_str}: VID={} PID={} serial={:?} bus_path={:?}",
+            ids.vid, ids.pid, ids.serial, ids.bus_path
+        );
 
-        if vid != SUPVAN_USB_VID {
+        if ids.vid != SUPVAN_USB_VID {
             continue;
         }
 
-        let model = match models::model_by_pid(&pid) {
+        let model = match models::model_by_pid(&ids.pid) {
             Some(m) => m,
             None => {
-                log::debug!("usb_discover: {name_str}: unknown PID {pid}");
+                log::debug!("usb_discover: {name_str}: unknown PID {}", ids.pid);
                 continue;
             }
         };
 
         let dev_path = format!("/dev/{name_str}");
-        let serial = match serial {
-            Some(s) => s,
-            None => {
-                log::warn!("usb_discover: {name_str}: no serial number, skipping");
-                continue;
-            }
+        let uri = if let Some(ref serial) = ids.serial {
+            format!("usbhid://{serial}")
+        } else if let Some(ref bus_path) = ids.bus_path {
+            log::info!("usb_discover: {name_str}: no serial, using bus path {bus_path}");
+            format!("usbhid://bus:{bus_path}")
+        } else {
+            log::warn!("usb_discover: {name_str}: no serial and no bus path, skipping");
+            continue;
         };
-        let uri = format!("usbhid://{serial}");
         let info = format!("Supvan {} (USB)", model.name);
         let device_id = format!("MFG:Supvan;MDL:{};CMD:SUPVAN;", model.name);
 
         log::info!(
-            "usb_discover: found {dev_path} (VID={vid}, PID={pid}, serial={serial:?}) -> {uri}"
+            "usb_discover: found {dev_path} (VID={}, PID={}, serial={:?}, bus_path={:?}) -> {uri}",
+            ids.vid, ids.pid, ids.serial, ids.bus_path
         );
         found = true;
 
@@ -95,13 +101,20 @@ pub fn has_device() -> bool {
     discover(|_, _, _| true)
 }
 
-/// Find the current `/dev/hidrawN` path for a device with the given serial number.
+/// Find the current `/dev/hidrawN` path for a device with the given ID.
 ///
-/// Scans sysfs for a hidraw device matching VID and any known PID with the given serial.
-pub fn find_device_by_serial(serial: &str) -> Option<String> {
+/// The `id` is the part after `usbhid://` in the URI:
+/// - A serial number (e.g. "7E1222120101") — matched against USB serial
+/// - A bus path prefixed with "bus:" (e.g. "bus:1-2.3") — matched against sysfs topology
+pub fn find_device_by_id(id: &str) -> Option<String> {
     let mut path = None;
-    scan_hidraw_paths(|dev_path, _vid, _pid, dev_serial| {
-        if dev_serial.as_deref() == Some(serial) {
+    scan_hidraw_paths(|dev_path, ids| {
+        let matches = if let Some(bus_path) = id.strip_prefix("bus:") {
+            ids.bus_path.as_deref() == Some(bus_path)
+        } else {
+            ids.serial.as_deref() == Some(id)
+        };
+        if matches {
             path = Some(dev_path.to_string());
             return false; // stop
         }
@@ -110,11 +123,11 @@ pub fn find_device_by_serial(serial: &str) -> Option<String> {
     path
 }
 
-/// Low-level scan of /sys/class/hidraw: calls `cb(dev_path, vid, pid, serial)` for each
+/// Low-level scan of /sys/class/hidraw: calls `cb(dev_path, usb_ids)` for each
 /// Supvan device found. Return `false` from `cb` to stop early.
 fn scan_hidraw_paths<F>(mut cb: F)
 where
-    F: FnMut(&str, &str, &str, &Option<String>) -> bool,
+    F: FnMut(&str, &UsbIds) -> bool,
 {
     let hidraw_dir = Path::new("/sys/class/hidraw");
     let entries = match fs::read_dir(hidraw_dir) {
@@ -130,24 +143,33 @@ where
         }
 
         let device_path = hidraw_dir.join(&*name_str).join("device");
-        let (vid, pid, serial) = match read_usb_ids(&device_path) {
+        let ids = match read_usb_ids(&device_path) {
             Some(ids) => ids,
             None => continue,
         };
 
-        if vid != SUPVAN_USB_VID || models::model_by_pid(&pid).is_none() {
+        if ids.vid != SUPVAN_USB_VID || models::model_by_pid(&ids.pid).is_none() {
             continue;
         }
 
         let dev_path = format!("/dev/{name_str}");
-        if !cb(&dev_path, &vid, &pid, &serial) {
+        if !cb(&dev_path, &ids) {
             break;
         }
     }
 }
 
-/// Walk up the sysfs device tree to find idVendor, idProduct, and serial.
-fn read_usb_ids(device_path: &Path) -> Option<(String, String, Option<String>)> {
+/// USB device identity read from sysfs.
+struct UsbIds {
+    vid: String,
+    pid: String,
+    serial: Option<String>,
+    /// Bus topology path (e.g. "1-2.3"), stable across reboots for a given port.
+    bus_path: Option<String>,
+}
+
+/// Walk up the sysfs device tree to find idVendor, idProduct, serial, and bus path.
+fn read_usb_ids(device_path: &Path) -> Option<UsbIds> {
     // Resolve the "device" symlink to get the real path
     let real_path = fs::canonicalize(device_path).ok()?;
 
@@ -163,9 +185,31 @@ fn read_usb_ids(device_path: &Path) -> Option<(String, String, Option<String>)> 
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
-            return Some((vid, pid, serial));
+            let bus_path = read_bus_path(current);
+            return Some(UsbIds {
+                vid,
+                pid,
+                serial,
+                bus_path,
+            });
         }
         current = current.parent()?;
     }
     None
+}
+
+/// Read the USB bus topology path from sysfs (busnum + devpath).
+///
+/// Returns e.g. "1-2.3" which is stable across reboots as long as the
+/// device stays on the same physical port.
+fn read_bus_path(usb_dev_dir: &Path) -> Option<String> {
+    let busnum = fs::read_to_string(usb_dev_dir.join("busnum"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    let devpath = fs::read_to_string(usb_dev_dir.join("devpath"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    Some(format!("{busnum}-{devpath}"))
 }

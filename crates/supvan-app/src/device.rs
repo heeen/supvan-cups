@@ -257,16 +257,16 @@ pub unsafe extern "C" fn usb_open_cb(
         Err(_) => return false,
     };
 
-    let serial = match uri_str.strip_prefix("usbhid://") {
+    let id = match uri_str.strip_prefix("usbhid://") {
         Some(s) => s,
         None => return false,
     };
 
-    log::info!("usb_open_cb: resolving serial '{serial}' to hidraw path");
-    let hidraw_path = match usb_discover::find_device_by_serial(serial) {
+    log::info!("usb_open_cb: resolving id '{id}' to hidraw path");
+    let hidraw_path = match usb_discover::find_device_by_id(id) {
         Some(p) => p,
         None => {
-            log::warn!("usb_open_cb: serial '{serial}' not found");
+            log::warn!("usb_open_cb: device id '{id}' not found");
             return false;
         }
     };
