@@ -1,2 +1,26 @@
-# Supvan T50 Pro / Katasymbol M50 Pro — allow user access to USB HID interface
+# Supvan / Katasymbol label printers — allow user access to USB HID interface
+# T50 family
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2072", MODE="0660", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2073", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2074", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2076", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2077", MODE="0660", TAG+="uaccess"
+# T80 family
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2075", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="207a", MODE="0660", TAG+="uaccess"
+# G family
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2090", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2091", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2092", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2093", MODE="0660", TAG+="uaccess"
+# TP76 family
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="202c", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2087", MODE="0660", TAG+="uaccess"
+# TP80 family
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="202e", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2080", MODE="0660", TAG+="uaccess"
+# TP86 family
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="202f", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2081", MODE="0660", TAG+="uaccess"
+# SP650
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="203e", MODE="0660", TAG+="uaccess"
