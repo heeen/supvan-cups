@@ -109,7 +109,9 @@ pub unsafe extern "C" fn ks_system_cb(
         None, // id_cb
     );
 
-    // Register printer drivers (all families)
+    // Register printer drivers (all families).
+    // PAPPL stores the pointer directly (`system->drivers = drivers`) without
+    // copying, so the array must outlive the system. Leak the Vec.
     let mut drivers: Vec<pappl_pr_driver_t> = models::families()
         .iter()
         .map(|f| pappl_pr_driver_t {
@@ -119,10 +121,13 @@ pub unsafe extern "C" fn ks_system_cb(
             extension: std::ptr::null_mut(),
         })
         .collect();
+    let num_drivers = drivers.len() as i32;
+    let drivers_ptr = drivers.as_mut_ptr();
+    std::mem::forget(drivers);
     papplSystemSetPrinterDrivers(
         system,
-        drivers.len() as i32,
-        drivers.as_mut_ptr(),
+        num_drivers,
+        drivers_ptr,
         Some(driver::ks_autoadd_cb),
         None, // create_cb
         Some(driver::ks_driver_cb),
