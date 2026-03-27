@@ -79,7 +79,7 @@ where
             log::warn!("usb_discover: {name_str}: no serial and no bus path, skipping");
             continue;
         };
-        let info = format!("Supvan {} (USB)", model.name);
+        let info = format!("Supvan {} USB", model.name);
         let device_id = format!("MFG:Supvan;MDL:{};CMD:SUPVAN;", model.name);
 
         log::info!(

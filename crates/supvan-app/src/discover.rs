@@ -244,7 +244,7 @@ where
 
         log::info!("discover: reporting {name} ({address})");
 
-        let device_info = format!("Supvan {name} (BT)");
+        let device_info = format!("Supvan {name} BT");
         let device_uri = format!("btrfcomm://bt/{address}");
         let device_id = format!("MFG:Supvan;MDL:{name} (BT);CMD:SUPVAN;");
 
