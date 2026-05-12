@@ -368,6 +368,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "pappl-rs"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "libc",
+ "log",
+ "pappl-sys",
+ "pkg-config",
+ "thiserror",
+]
+
+[[package]]
 name = "pappl-sys"
 version = "0.1.0"
 dependencies = [
@@ -519,6 +531,7 @@ dependencies = [
  "env_logger",
  "libc",
  "log",
+ "pappl-rs",
  "pappl-sys",
  "serde",
  "supvan-proto",

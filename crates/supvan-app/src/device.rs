@@ -12,7 +12,7 @@ use pappl_sys::*;
 
 use crate::battery_provider;
 use crate::discover;
-use crate::printer_device::{KsDevice, PAPPL_PREASON_OTHER};
+use crate::printer_device::KsDevice;
 use crate::usb_discover;
 
 // --- BT connection cache ---
@@ -212,9 +212,9 @@ pub unsafe extern "C" fn bt_write_cb(
 pub unsafe extern "C" fn bt_status_cb(device: *mut pappl_device_t) -> pappl_preason_t {
     let ptr = papplDeviceGetData(device) as *mut KsDevice;
     if ptr.is_null() {
-        return PAPPL_PREASON_OTHER;
+        return pappl_rs::PrinterReason::OTHER.into();
     }
-    (*ptr).status()
+    (*ptr).status().into()
 }
 
 // --- USB HID callbacks ---
@@ -320,7 +320,7 @@ pub unsafe extern "C" fn usb_write_cb(
 pub unsafe extern "C" fn usb_status_cb(device: *mut pappl_device_t) -> pappl_preason_t {
     let ptr = papplDeviceGetData(device) as *mut KsDevice;
     if ptr.is_null() {
-        return PAPPL_PREASON_OTHER;
+        return pappl_rs::PrinterReason::OTHER.into();
     }
-    (*ptr).status()
+    (*ptr).status().into()
 }

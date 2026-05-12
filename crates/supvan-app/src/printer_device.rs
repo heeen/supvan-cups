@@ -30,14 +30,10 @@ pub struct KsMaterial {
     pub remaining: i32,
 }
 
-// PAPPL pappl_preason_t bit flags.
-pub const PAPPL_PREASON_NONE: u32 = 0x0000;
-pub const PAPPL_PREASON_OTHER: u32 = 0x0001;
-pub const PAPPL_PREASON_COVER_OPEN: u32 = 0x0002;
-pub const PAPPL_PREASON_MEDIA_EMPTY: u32 = 0x0080;
-pub const PAPPL_PREASON_MEDIA_JAM: u32 = 0x0100;
-pub const PAPPL_PREASON_MEDIA_NEEDED: u32 = 0x0400;
-pub const PAPPL_PREASON_OFFLINE: u32 = 0x0800;
+// Typed PAPPL state-reason flags now live in `pappl_rs::PrinterReason`;
+// see `KsDevice::status` for the typed wrapper. The raw integers exposed
+// to the device-scheme `*_status_cb` are converted via `.into()` at the
+// callback boundary.
 
 impl KsDevice {
     /// Open a Bluetooth RFCOMM connection to the printer at `addr`.
@@ -146,43 +142,46 @@ impl KsDevice {
         }
     }
 
-    /// Query printer status and return pappl_preason_t bit flags.
+    /// Query printer status and return typed reason flags.
     ///
-    /// Returns PAPPL_PREASON_NONE while the printing flag is set.
-    pub fn status(&self) -> u32 {
+    /// Returns `PrinterReason::empty()` while the printing flag is set
+    /// (so PAPPL doesn't try to query a printer mid-transfer).
+    pub fn status(&self) -> pappl_rs::PrinterReason {
+        use pappl_rs::PrinterReason;
+
         let printer = match &self.printer {
             Some(p) => p,
-            None => return PAPPL_PREASON_NONE,
+            None => return PrinterReason::empty(),
         };
 
         if self.printing.load(Ordering::Acquire) {
-            return PAPPL_PREASON_NONE;
+            return PrinterReason::empty();
         }
 
         let status = match printer.query_status() {
             Ok(Some(s)) => s,
-            Ok(None) => return PAPPL_PREASON_OTHER,
+            Ok(None) => return PrinterReason::OTHER,
             Err(e) => {
                 log::warn!("KsDevice::status: query failed: {e}");
-                return PAPPL_PREASON_OTHER;
+                return PrinterReason::OTHER;
             }
         };
 
-        let mut reasons = PAPPL_PREASON_NONE;
+        let mut reasons = PrinterReason::empty();
         if status.cover_open {
-            reasons |= PAPPL_PREASON_COVER_OPEN;
+            reasons |= PrinterReason::COVER_OPEN;
         }
         if status.label_end || status.label_not_installed {
-            reasons |= PAPPL_PREASON_MEDIA_EMPTY;
+            reasons |= PrinterReason::MEDIA_EMPTY;
         }
         if status.label_rw_error || status.label_mode_error {
-            reasons |= PAPPL_PREASON_MEDIA_JAM;
+            reasons |= PrinterReason::MEDIA_JAM;
         }
         if status.ribbon_end {
-            reasons |= PAPPL_PREASON_MEDIA_NEEDED;
+            reasons |= PrinterReason::MEDIA_NEEDED;
         }
         if status.head_temp_high {
-            reasons |= PAPPL_PREASON_OTHER;
+            reasons |= PrinterReason::OTHER;
         }
         reasons
     }

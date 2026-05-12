@@ -7,65 +7,63 @@ use supvan_proto::error::Error as ProtoError;
 use supvan_proto::speed::calc_speed;
 use supvan_proto::status::PrinterStatus;
 
-use crate::dump::{dump_pbm, dump_printhead_pbm, PgmAccumulator};
-use crate::printer_device::{
-    KsDevice, PAPPL_PREASON_COVER_OPEN, PAPPL_PREASON_MEDIA_EMPTY, PAPPL_PREASON_MEDIA_JAM,
-    PAPPL_PREASON_NONE, PAPPL_PREASON_OFFLINE, PAPPL_PREASON_OTHER,
-};
+use pappl_rs::PrinterReason;
 
-/// Failure of a print job, carrying the PAPPL reason flags and a
-/// human-readable message so callers can surface it to CUPS / IPP clients.
+use crate::dump::{dump_pbm, dump_printhead_pbm, PgmAccumulator};
+use crate::printer_device::KsDevice;
+
+/// Failure of a print job, carrying the PAPPL printer-state-reason flags
+/// and a human-readable message so callers can surface it to CUPS / IPP
+/// clients. Translated by `raster::report_job_failure`.
 pub struct JobFailure {
-    /// Bits to OR into `papplPrinterSetReasons`.
-    pub preason: u32,
-    /// Short message, suitable for `papplJobSetMessage` and the job log.
+    /// Reasons to OR into the printer's `printer-state-reasons`.
+    pub printer_reasons: PrinterReason,
+    /// Short message, suitable for `job-state-message` and the job log.
     pub message: String,
 }
 
 impl JobFailure {
     pub fn other(msg: impl Into<String>) -> Self {
         Self {
-            preason: PAPPL_PREASON_OTHER,
+            printer_reasons: PrinterReason::OTHER,
             message: msg.into(),
         }
     }
 
     /// Translate a printer status with at least one error flag set into
-    /// PAPPL reasons + a message. Falls back to `OTHER` if no specific
-    /// flag matches.
+    /// reasons + a message. Falls back to `OTHER` if no specific flag
+    /// matches.
     pub fn from_status(s: &PrinterStatus, context: &str) -> Self {
-        let mut preason = PAPPL_PREASON_NONE;
+        let mut reasons = PrinterReason::empty();
         if s.cover_open {
-            preason |= PAPPL_PREASON_COVER_OPEN;
+            reasons |= PrinterReason::COVER_OPEN;
         }
         if s.label_end || s.label_not_installed {
-            preason |= PAPPL_PREASON_MEDIA_EMPTY;
+            reasons |= PrinterReason::MEDIA_EMPTY;
         }
         if s.label_rw_error || s.label_mode_error || s.ribbon_rw_error {
-            preason |= PAPPL_PREASON_MEDIA_JAM;
+            reasons |= PrinterReason::MEDIA_JAM;
         }
-        if preason == PAPPL_PREASON_NONE {
-            preason = PAPPL_PREASON_OTHER;
+        if reasons.is_empty() {
+            reasons = PrinterReason::OTHER;
         }
         let desc = s.error_description().unwrap_or_else(|| "unknown".into());
         Self {
-            preason,
+            printer_reasons: reasons,
             message: format!("{context}: {desc}"),
         }
     }
 
-    /// Translate a transport-level error. ENOTCONN / IO failures map to
-    /// OFFLINE; everything else to OTHER.
+    /// Translate a transport-level error. IO failures (typically
+    /// ENOTCONN from a dead RFCOMM socket) map to OFFLINE; everything
+    /// else to OTHER.
     pub fn from_proto(e: ProtoError, context: &str) -> Self {
-        let preason = match &e {
-            ProtoError::Io(io) if io.raw_os_error() == Some(libc::ENOTCONN) => {
-                PAPPL_PREASON_OFFLINE
-            }
-            ProtoError::Io(_) => PAPPL_PREASON_OFFLINE,
-            _ => PAPPL_PREASON_OTHER,
+        let reasons = match &e {
+            ProtoError::Io(_) => PrinterReason::OFFLINE,
+            _ => PrinterReason::OTHER,
         };
         Self {
-            preason,
+            printer_reasons: reasons,
             message: format!("{context}: {e}"),
         }
     }

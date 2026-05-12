@@ -11,40 +11,22 @@ use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
 use crate::job::{JobFailure, KsJob};
 
-/// Surface a `JobFailure` to PAPPL/CUPS:
-///   - `papplPrinterSetReasons` adds the matching state-reason flag
-///     (media-empty, cover-open, media-jam, offline, …) so it shows up
-///     in `printer-state-reasons` for any IPP/CUPS UI.
-///   - `papplJobSetReasons` marks the job canceled-at-device and
-///     errors-detected so the job ends with a non-success state.
-///   - `papplJobSetMessage` sets `job-state-message` to our text.
-///   - `papplLogJob` logs the message at ERROR level.
-///
-/// Note: state-reasons set on the printer here persist until the
-/// status callback (which queries the printer and clears flags that
-/// no longer apply) runs again.
+/// Surface a `JobFailure` to PAPPL/CUPS via the safe pappl-rs API:
+/// adds the matching `PrinterReason` to `printer-state-reasons`, marks
+/// the job canceled-at-device + errors-detected, sets
+/// `job-state-message`, and logs the message at ERROR level.
 unsafe fn report_job_failure(
     job: *mut pappl_job_t,
-    printer: *mut pappl_printer_t,
+    _printer: *mut pappl_printer_t,
     fail: &JobFailure,
 ) {
-    let cmsg = std::ffi::CString::new(fail.message.as_str())
-        .unwrap_or_else(|_| std::ffi::CString::new("print failed").unwrap());
-
-    if !printer.is_null() && fail.preason != 0 {
-        papplPrinterSetReasons(printer, fail.preason, 0);
-    }
-    papplJobSetReasons(
-        job,
-        pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE
-            | pappl_jreason_e_PAPPL_JREASON_ERRORS_DETECTED,
-        pappl_jreason_e_PAPPL_JREASON_NONE,
-    );
-    papplJobSetMessage(job, cmsg.as_ptr());
-    papplLogJob(job, pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR, cmsg.as_ptr());
+    // SAFETY: `job` is a live job pointer from a PAPPL callback. The
+    // wrapped `Job` borrows it only for the duration of this call.
+    let job = pappl_rs::Job::from_raw(job);
+    job.fail(fail.printer_reasons, &fail.message);
 }
 use crate::models;
-use crate::printer_device::{KsDevice, PAPPL_PREASON_NONE, PAPPL_PREASON_OFFLINE};
+use crate::printer_device::KsDevice;
 use crate::util::copy_to_c_buf;
 
 /// Helper: get printer darkness setting (0-100).
@@ -231,13 +213,14 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
     let family = get_family(printer).unwrap_or(models::default_family());
 
     let device = papplPrinterOpenDevice(printer);
+    let p = pappl_rs::Printer::from_raw(printer);
     if device.is_null() {
-        papplPrinterSetReasons(printer, PAPPL_PREASON_OFFLINE, PAPPL_PREASON_NONE);
+        p.set_reasons(pappl_rs::PrinterReason::OFFLINE, pappl_rs::PrinterReason::empty());
         return false;
     }
 
     // Device reachable — clear offline flag
-    papplPrinterSetReasons(printer, PAPPL_PREASON_NONE, PAPPL_PREASON_OFFLINE);
+    p.set_reasons(pappl_rs::PrinterReason::empty(), pappl_rs::PrinterReason::OFFLINE);
 
     let dev_ptr = papplDeviceGetData(device) as *mut KsDevice;
     if dev_ptr.is_null() {
