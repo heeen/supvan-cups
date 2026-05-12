@@ -20,12 +20,15 @@
 //! transparent: on older PAPPL they return `Err(Error::Unsupported)` and
 //! the caller can fall back to mainloop-driven auto-add.
 
+pub mod device;
+pub mod device_handle;
 pub mod error;
 pub mod flags;
 pub mod job;
 pub mod printer;
 pub mod system;
 
+pub use device_handle::DeviceHandle;
 pub use error::{Error, Result};
 pub use flags::{DeviceType, JobReason, LogLevel, PrinterReason, SystemOptions};
 pub use job::Job;
@@ -40,5 +43,6 @@ pub mod sys {
 }
 
 pub mod prelude {
+    pub use crate::device::DeviceScheme;
     pub use crate::{Error, Job, JobReason, LogLevel, Printer, PrinterReason, Result, System};
 }

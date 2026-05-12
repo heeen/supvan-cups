@@ -1,12 +1,13 @@
 //! Safe wrapper around `pappl_printer_t`.
-//!
-//! Phase 1: just the methods needed by `report_job_failure` — wrapping a
-//! raw pointer and `set_reasons`. More accessors (`get_driver_data`,
-//! `open_device`, `set_ready_media`, …) move in over Phase 2/3.
 
-use pappl_sys::{papplPrinterSetReasons, pappl_printer_t};
+use pappl_sys::{
+    papplPrinterCloseDevice, papplPrinterGetDriverName, papplPrinterOpenDevice,
+    papplPrinterSetReasons, pappl_printer_t,
+};
+use std::ffi::CStr;
 use std::marker::PhantomData;
 
+use crate::device_handle::DeviceHandle;
 use crate::flags::PrinterReason;
 
 /// Borrowed handle to a PAPPL printer.
@@ -51,5 +52,40 @@ impl<'a> Printer<'a> {
             return;
         }
         unsafe { papplPrinterSetReasons(self.raw, add.into(), remove.into()) };
+    }
+
+    /// Get the printer's driver name as a `&CStr`.
+    pub fn driver_name(&self) -> Option<&'a CStr> {
+        if self.raw.is_null() {
+            return None;
+        }
+        let ptr = unsafe { papplPrinterGetDriverName(self.raw) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { CStr::from_ptr(ptr) })
+        }
+    }
+
+    /// Open the printer's device for direct I/O. Returns `None` if the
+    /// device is unavailable (offline, busy, etc.). The device must be
+    /// closed via [`close_device`](Self::close_device) when done.
+    pub fn open_device(&self) -> Option<DeviceHandle<'a>> {
+        if self.raw.is_null() {
+            return None;
+        }
+        let dev = unsafe { papplPrinterOpenDevice(self.raw) };
+        if dev.is_null() {
+            None
+        } else {
+            Some(unsafe { DeviceHandle::from_raw(dev) })
+        }
+    }
+
+    /// Close a device previously opened via [`open_device`](Self::open_device).
+    pub fn close_device(&self) {
+        if !self.raw.is_null() {
+            unsafe { papplPrinterCloseDevice(self.raw) };
+        }
     }
 }

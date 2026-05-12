@@ -1,14 +1,14 @@
 //! Safe wrapper around `pappl_job_t`.
 //!
-//! Phase 1: the methods needed by `report_job_failure` —
-//! `set_reasons`, `set_message`, `log`, and `printer()` to reach the
-//! owning `Printer`. Job-payload `set_data<T>/take_data<T>` lands in
-//! Phase 3 with the `RasterDriver` trait.
+//! Provides `set_reasons`, `set_message`, `log`, `printer()`, and typed
+//! per-job data management (`set_data<T>`, `data<T>`, `data_mut<T>`,
+//! `take_data<T>`).
 
 use pappl_sys::{
-    papplJobGetPrinter, papplJobSetMessage, papplJobSetReasons, papplLogJob, pappl_job_t,
+    papplJobGetData, papplJobGetPrinter, papplJobSetData, papplJobSetMessage, papplJobSetReasons,
+    papplLogJob, pappl_job_t,
 };
-use std::ffi::CString;
+use std::ffi::{c_void, CString};
 use std::marker::PhantomData;
 
 use crate::flags::{JobReason, LogLevel};
@@ -84,6 +84,89 @@ impl<'a> Job<'a> {
         let cmsg = CString::new(msg)
             .unwrap_or_else(|_| CString::new("log message failed").expect("static literal has no NUL"));
         unsafe { papplLogJob(self.raw, level.into(), cmsg.as_ptr()) };
+    }
+
+    // -- Per-job typed data management ----------------------------------
+    //
+    // PAPPL stores a single `void*` per job via papplJobSetData/GetData.
+    // These methods provide typed access, boxing the value on `set` and
+    // reclaiming it on `take`.
+
+    /// Store per-job data. The value is boxed and stored via
+    /// `papplJobSetData`. Any previous data is **leaked** — call
+    /// `take_data::<T>()` first if you need to reclaim it.
+    ///
+    /// # Safety
+    /// Must not be called while another reference (from `data` /
+    /// `data_mut`) is live.
+    pub unsafe fn set_data<T: 'static>(&self, val: T) {
+        if self.raw.is_null() {
+            return;
+        }
+        let boxed = Box::new(val);
+        papplJobSetData(self.raw, Box::into_raw(boxed) as *mut c_void);
+    }
+
+    /// Get a shared reference to the per-job data.
+    ///
+    /// # Safety
+    /// `T` must match the type previously stored via `set_data`.
+    pub unsafe fn data<T: 'static>(&self) -> Option<&'a T> {
+        if self.raw.is_null() {
+            return None;
+        }
+        let ptr = papplJobGetData(self.raw) as *const T;
+        if ptr.is_null() {
+            None
+        } else {
+            Some(&*ptr)
+        }
+    }
+
+    /// Get a mutable reference to the per-job data.
+    ///
+    /// # Safety
+    /// `T` must match the type previously stored via `set_data`, and
+    /// no other reference may be live.
+    pub unsafe fn data_mut<T: 'static>(&self) -> Option<&'a mut T> {
+        if self.raw.is_null() {
+            return None;
+        }
+        let ptr = papplJobGetData(self.raw) as *mut T;
+        if ptr.is_null() {
+            None
+        } else {
+            Some(&mut *ptr)
+        }
+    }
+
+    /// Reclaim the per-job data, returning the owned value and clearing
+    /// the PAPPL slot. Returns `None` if the slot was null.
+    ///
+    /// # Safety
+    /// `T` must match the type previously stored via `set_data`. Must
+    /// not be called while any reference from `data`/`data_mut` is live.
+    pub unsafe fn take_data<T: 'static>(&self) -> Option<T> {
+        if self.raw.is_null() {
+            return None;
+        }
+        let ptr = papplJobGetData(self.raw) as *mut T;
+        if ptr.is_null() {
+            return None;
+        }
+        papplJobSetData(self.raw, std::ptr::null_mut());
+        Some(*Box::from_raw(ptr))
+    }
+
+    /// Clear the per-job data slot without reclaiming (leaks the value).
+    /// Use `take_data` instead if you need proper cleanup.
+    ///
+    /// # Safety
+    /// Must not be called while a reference from `data`/`data_mut` is live.
+    pub unsafe fn clear_data(&self) {
+        if !self.raw.is_null() {
+            papplJobSetData(self.raw, std::ptr::null_mut());
+        }
     }
 
     /// Convenience for the canonical "job failed at device" surface:

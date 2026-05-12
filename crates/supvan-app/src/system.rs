@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use pappl_sys::*;
 
-use crate::device;
+use crate::device::{BtScheme, UsbScheme};
 use crate::driver;
 use crate::models;
 use crate::usb_discover;
@@ -83,31 +83,10 @@ pub unsafe extern "C" fn ks_system_cb(
     version.version = [1, 0, 0, 0];
     papplSystemSetVersions(system, 1, &mut version);
 
-    // Register btrfcomm:// device scheme
-    papplDeviceAddScheme(
-        c"btrfcomm".as_ptr(),
-        pappl_devtype_e_PAPPL_DEVTYPE_CUSTOM_LOCAL,
-        Some(device::bt_list_cb),
-        Some(device::bt_open_cb),
-        Some(device::bt_close_cb),
-        Some(device::bt_read_cb),
-        Some(device::bt_write_cb),
-        Some(device::bt_status_cb),
-        None, // id_cb
-    );
-
-    // Register usbhid:// device scheme
-    papplDeviceAddScheme(
-        c"usbhid".as_ptr(),
-        pappl_devtype_e_PAPPL_DEVTYPE_CUSTOM_LOCAL,
-        Some(device::usb_list_cb),
-        Some(device::usb_open_cb),
-        Some(device::usb_close_cb),
-        Some(device::usb_read_cb),
-        Some(device::usb_write_cb),
-        Some(device::usb_status_cb),
-        None, // id_cb
-    );
+    // Register device schemes via pappl-rs trait thunks.
+    let sys = pappl_rs::System::from_raw(system);
+    sys.register_scheme::<BtScheme>();
+    sys.register_scheme::<UsbScheme>();
 
     // Register printer drivers (all families).
     // PAPPL stores the pointer directly (`system->drivers = drivers`) without
@@ -144,18 +123,9 @@ pub unsafe extern "C" fn ks_system_cb(
     // PAPPL's _papplMainloopRunServer only auto-adds when it handles
     // LoadState itself (which we do here instead).
     //
-    // `papplSystemCreatePrinters` was added in PAPPL 1.4. The wrapper in
-    // `pappl-sys` returns false on older PAPPL (compiled without the
-    // symbol) so this is portable. (Don't try a `#[cfg(pappl_1_4)]` here:
-    // `cargo:rustc-cfg` doesn't propagate from `pappl-sys` to dependent
-    // crates — that's the regression that hid USB auto-add in #2.)
-    let created = try_system_create_printers(
-        system,
-        pappl_devtype_e_PAPPL_DEVTYPE_LOCAL,
-        None,
-        std::ptr::null_mut(),
-    );
-    if !created {
+    // `papplSystemCreatePrinters` was added in PAPPL 1.4. The safe
+    // wrapper returns Err(Unsupported) on older PAPPL so this is portable.
+    if sys.auto_add_printers(pappl_rs::DeviceType::LOCAL).is_err() {
         log::warn!(
             "Linked PAPPL lacks papplSystemCreatePrinters (pre-1.4); \
              relying on mainloop auto-add for printer discovery."

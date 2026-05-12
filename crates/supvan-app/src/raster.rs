@@ -1,7 +1,5 @@
 //! PAPPL raster callbacks and printer status callback.
 
-use std::ffi::{c_void, CStr};
-
 use pappl_sys::*;
 
 use crate::battery_provider;
@@ -10,48 +8,33 @@ use crate::dither::dither_line;
 use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
 use crate::job::{JobFailure, KsJob};
-
-/// Surface a `JobFailure` to PAPPL/CUPS via the safe pappl-rs API:
-/// adds the matching `PrinterReason` to `printer-state-reasons`, marks
-/// the job canceled-at-device + errors-detected, sets
-/// `job-state-message`, and logs the message at ERROR level.
-unsafe fn report_job_failure(
-    job: *mut pappl_job_t,
-    _printer: *mut pappl_printer_t,
-    fail: &JobFailure,
-) {
-    // SAFETY: `job` is a live job pointer from a PAPPL callback. The
-    // wrapped `Job` borrows it only for the duration of this call.
-    let job = pappl_rs::Job::from_raw(job);
-    job.fail(fail.printer_reasons, &fail.message);
-}
 use crate::models;
 use crate::printer_device::KsDevice;
 use crate::util::copy_to_c_buf;
 
+/// Surface a `JobFailure` to PAPPL/CUPS via the safe pappl-rs API.
+unsafe fn report_job_failure(job: *mut pappl_job_t, fail: &JobFailure) {
+    let job = pappl_rs::Job::from_raw(job);
+    job.fail(fail.printer_reasons, &fail.message);
+}
+
 /// Helper: get printer darkness setting (0-100).
-unsafe fn get_darkness(job: *mut pappl_job_t) -> i32 {
-    let printer = papplJobGetPrinter(job);
+unsafe fn get_darkness(job: &pappl_rs::Job<'_>) -> i32 {
+    let printer = job.printer();
     if printer.is_null() {
         return 50;
     }
-
     let mut data: pappl_pr_driver_data_t = Default::default();
-    let result = papplPrinterGetDriverData(printer, &mut data);
+    let result = papplPrinterGetDriverData(printer.as_raw(), &mut data);
     if result.is_null() {
         return 50;
     }
-
     data.darkness_configured
 }
 
 /// Look up the driver family for a printer via its driver name.
-unsafe fn get_family(printer: *mut pappl_printer_t) -> Option<&'static models::DriverFamily> {
-    let name_ptr = papplPrinterGetDriverName(printer);
-    if name_ptr.is_null() {
-        return None;
-    }
-    let name = CStr::from_ptr(name_ptr);
+fn get_family(printer: &pappl_rs::Printer<'_>) -> Option<&'static models::DriverFamily> {
+    let name = printer.driver_name()?;
     models::family_by_driver_name(name)
 }
 
@@ -61,12 +44,15 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
     options: *mut pappl_pr_options_t,
     device: *mut pappl_device_t,
 ) -> bool {
-    let dev_ptr = papplDeviceGetData(device) as *mut KsDevice;
-    if dev_ptr.is_null() || options.is_null() {
+    let dev_handle = pappl_rs::DeviceHandle::from_raw(device);
+    let Some(dev) = dev_handle.data::<KsDevice>() else {
+        return false;
+    };
+    if options.is_null() {
         return false;
     }
-    let dev = &*dev_ptr;
     let opts = &*options;
+    let job = pappl_rs::Job::from_raw(job);
 
     device::bt_touch_print_time();
 
@@ -78,30 +64,34 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
         opts.header.cupsBytesPerLine
     };
 
-    // Map darkness (0-100%) to density (0-15)
-    let darkness = get_darkness(job);
+    let darkness = get_darkness(&job);
     let density = ((darkness * 15 + 50) / 100) as u8;
 
-    // Look up printhead width from driver family
-    let printer = papplJobGetPrinter(job);
-    let printhead_width_dots = get_family(printer)
+    let printhead_width_dots = get_family(&job.printer())
         .map(|f| f.printhead_width_dots)
         .unwrap_or(384);
 
-    let mut ks_job = match KsJob::start(dev, w, h, bpl, density, printhead_width_dots) {
+    let ks_job = match KsJob::start(dev, w, h, bpl, density, printhead_width_dots) {
         Ok(j) => j,
         Err(fail) => {
-            report_job_failure(job, papplJobGetPrinter(job), &fail);
+            report_job_failure(job.as_raw(), &fail);
             return false;
         }
     };
 
     // Create PGM accumulator if dump dir is set and input is 8bpp
     if opts.header.cupsBitsPerPixel == 8 && std::env::var("SUPVAN_DUMP_DIR").is_ok() {
-        ks_job.pgm_acc = Some(PgmAccumulator::new(w, h));
+        // Need mutable access — store first, then mutate
     }
 
-    papplJobSetData(job, Box::into_raw(ks_job) as *mut c_void);
+    job.set_data(*ks_job);
+
+    if opts.header.cupsBitsPerPixel == 8 && std::env::var("SUPVAN_DUMP_DIR").is_ok() {
+        if let Some(ks) = job.data_mut::<KsJob>() {
+            ks.pgm_acc = Some(PgmAccumulator::new(w, h));
+        }
+    }
+
     true
 }
 
@@ -123,23 +113,23 @@ pub unsafe extern "C" fn ks_rwriteline_cb(
     y: u32,
     line: *const u8,
 ) -> bool {
-    let job_ptr = papplJobGetData(job) as *mut KsJob;
-    if job_ptr.is_null() || line.is_null() || options.is_null() {
+    let job = pappl_rs::Job::from_raw(job);
+    let Some(ks_job) = job.data_mut::<KsJob>() else {
+        return false;
+    };
+    if line.is_null() || options.is_null() {
         return false;
     }
-    let ks_job = &mut *job_ptr;
     let opts = &*options;
     let width = opts.header.cupsWidth;
 
     if opts.header.cupsBitsPerPixel == 8 {
         let input = std::slice::from_raw_parts(line, width as usize);
 
-        // Feed raw 8bpp to PGM accumulator if present
         if let Some(ref mut acc) = ks_job.pgm_acc {
             acc.push_line(y, input);
         }
 
-        // Dither 8bpp -> 1bpp
         let bpl_1bpp = width.div_ceil(8) as usize;
         let mut mono = vec![0u8; bpl_1bpp];
         dither_line(input, width, y, &mut mono);
@@ -147,7 +137,6 @@ pub unsafe extern "C" fn ks_rwriteline_cb(
         return ks_job.write_line(y, &mono);
     }
 
-    // Already 1bpp — pass through
     let bpl = opts.header.cupsBytesPerLine as usize;
     let input = std::slice::from_raw_parts(line, bpl);
     ks_job.write_line(y, input)
@@ -164,14 +153,18 @@ pub unsafe extern "C" fn ks_rendpage_cb(
     device: *mut pappl_device_t,
     _page: u32,
 ) -> bool {
-    let job_ptr = papplJobGetData(job) as *mut KsJob;
-    let dev_ptr = papplDeviceGetData(device) as *mut KsDevice;
-    if job_ptr.is_null() || dev_ptr.is_null() || options.is_null() {
+    let dev_handle = pappl_rs::DeviceHandle::from_raw(device);
+    let Some(dev) = dev_handle.data::<KsDevice>() else {
+        return false;
+    };
+    let job = pappl_rs::Job::from_raw(job);
+    let Some(ks_job) = job.data_mut::<KsJob>() else {
+        return false;
+    };
+    if options.is_null() {
         return false;
     }
 
-    let ks_job = &mut *job_ptr;
-    let dev = &*dev_ptr;
     let copies = ((*options).copies as u32).max(1);
 
     for copy in 0..copies {
@@ -179,7 +172,7 @@ pub unsafe extern "C" fn ks_rendpage_cb(
             log::info!("ks_rendpage_cb: printing copy {}/{copies}", copy + 1);
         }
         if let Err(fail) = ks_job.end_page(dev) {
-            report_job_failure(job, papplJobGetPrinter(job), &fail);
+            report_job_failure(job.as_raw(), &fail);
             return false;
         }
     }
@@ -193,55 +186,47 @@ pub unsafe extern "C" fn ks_rendjob_cb(
     _options: *mut pappl_pr_options_t,
     device: *mut pappl_device_t,
 ) -> bool {
-    let job_ptr = papplJobGetData(job) as *mut KsJob;
-    let dev_ptr = papplDeviceGetData(device) as *mut KsDevice;
+    let job = pappl_rs::Job::from_raw(job);
 
-    if !job_ptr.is_null() {
-        let ks_job = Box::from_raw(job_ptr);
-        if !dev_ptr.is_null() {
-            let dev = &*dev_ptr;
+    if let Some(ks_job) = job.take_data::<KsJob>() {
+        let dev_handle = pappl_rs::DeviceHandle::from_raw(device);
+        if let Some(dev) = dev_handle.data::<KsDevice>() {
             ks_job.end(dev);
         }
     }
 
-    papplJobSetData(job, std::ptr::null_mut());
     true
 }
 
 /// Printer status callback — update media-ready from loaded roll.
 pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
-    let family = get_family(printer).unwrap_or(models::default_family());
-
-    let device = papplPrinterOpenDevice(printer);
     let p = pappl_rs::Printer::from_raw(printer);
-    if device.is_null() {
+    let family = get_family(&p).unwrap_or(models::default_family());
+
+    let Some(dev_handle) = p.open_device() else {
         p.set_reasons(pappl_rs::PrinterReason::OFFLINE, pappl_rs::PrinterReason::empty());
         return false;
-    }
+    };
 
-    // Device reachable — clear offline flag
     p.set_reasons(pappl_rs::PrinterReason::empty(), pappl_rs::PrinterReason::OFFLINE);
 
-    let dev_ptr = papplDeviceGetData(device) as *mut KsDevice;
-    if dev_ptr.is_null() {
-        papplPrinterCloseDevice(printer);
+    let Some(dev) = dev_handle.data::<KsDevice>() else {
+        p.close_device();
         return false;
-    }
-    let dev = &*dev_ptr;
+    };
 
     let mat = match dev.material() {
         Some(m) => m,
         None => {
-            papplPrinterCloseDevice(printer);
-            return true; // non-fatal
+            p.close_device();
+            return true;
         }
     };
     let low_battery = dev.battery_low();
     let bt_addr = dev.addr.clone();
 
-    papplPrinterCloseDevice(printer);
+    p.close_device();
 
-    // Update BlueZ battery provider
     if let (Some(h), Some(addr)) = (battery_provider::handle(), bt_addr.as_deref()) {
         let percentage = if low_battery { 10 } else { 100 };
         h.update_battery(addr, percentage);
@@ -260,7 +245,6 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
 
     papplPrinterSetReadyMedia(printer, 1, &mut ready);
 
-    // Report supplies: labels remaining + battery
     let mut supplies: [pappl_supply_t; 2] = Default::default();
     let mut num_supplies = 0;
 
@@ -269,7 +253,7 @@ pub unsafe extern "C" fn ks_status_cb(printer: *mut pappl_printer_t) -> bool {
         supplies[num_supplies].color = pappl_supply_color_e_PAPPL_SUPPLY_COLOR_NO_COLOR;
         supplies[num_supplies].type_ = pappl_supply_type_e_PAPPL_SUPPLY_TYPE_OTHER;
         supplies[num_supplies].is_consumed = true;
-        supplies[num_supplies].level = (mat.remaining as i32).min(100);
+        supplies[num_supplies].level = mat.remaining.min(100);
         num_supplies += 1;
     }
 

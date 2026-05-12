@@ -7,6 +7,7 @@
 use pappl_sys::pappl_system_t;
 use std::marker::PhantomData;
 
+use crate::device::DeviceScheme;
 use crate::flags::DeviceType;
 use crate::{Error, Result};
 
@@ -36,6 +37,14 @@ impl<'a> System<'a> {
     /// directly during migration.
     pub fn as_raw(&self) -> *mut pappl_system_t {
         self.raw
+    }
+
+    /// Register a custom device scheme. The scheme's URI prefix
+    /// (`S::NAME`), device type, and callback set are installed via
+    /// `papplDeviceAddScheme`. Generic thunks in `device::install`
+    /// bridge the trait methods to PAPPL's C ABI.
+    pub fn register_scheme<S: DeviceScheme>(&self) {
+        unsafe { crate::device::install::<S>(self.raw) };
     }
 
     /// Discover and auto-add printers across the registered device
