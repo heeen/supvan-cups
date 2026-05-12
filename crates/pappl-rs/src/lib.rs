@@ -20,8 +20,12 @@
 //! transparent: on older PAPPL they return `Err(Error::Unsupported)` and
 //! the caller can fall back to mainloop-driven auto-add.
 
+mod macros;
+pub mod util;
+
 pub mod device;
 pub mod device_handle;
+pub mod driver_data;
 pub mod error;
 pub mod flags;
 pub mod job;
@@ -29,11 +33,12 @@ pub mod printer;
 pub mod system;
 
 pub use device_handle::DeviceHandle;
+pub use driver_data::DriverDataBuilder;
 pub use error::{Error, Result};
 pub use flags::{DeviceType, JobReason, LogLevel, PrinterReason, SystemOptions};
 pub use job::Job;
 pub use printer::Printer;
-pub use system::System;
+pub use system::{System, SystemBuilder};
 
 /// Re-export of `pappl-sys` for callers that still need raw access during
 /// migration. Once the wrapper is feature-complete, dependents should

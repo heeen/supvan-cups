@@ -22,7 +22,6 @@ fn build_state_path() -> CString {
         format!("{dir}/supvan-printer-app.state")
     } else {
         let home = std::env::var("HOME").ok().unwrap_or_else(|| {
-            // Fallback to getpwuid
             unsafe {
                 let pw = libc::getpwuid(libc::getuid());
                 if pw.is_null() || (*pw).pw_dir.is_null() {
@@ -56,42 +55,7 @@ pub unsafe extern "C" fn ks_system_cb(
     _options: *mut cups_option_t,
     _data: *mut c_void,
 ) -> *mut pappl_system_t {
-    let system = papplSystemCreate(
-        pappl_soptions_e_PAPPL_SOPTIONS_MULTI_QUEUE | pappl_soptions_e_PAPPL_SOPTIONS_WEB_INTERFACE,
-        c"supvan-printer-app".as_ptr(),
-        8631,
-        std::ptr::null(), // subtypes
-        std::ptr::null(), // spooldir
-        c"-".as_ptr(),    // logfile: "-" = stderr
-        pappl_loglevel_e_PAPPL_LOGLEVEL_DEBUG,
-        std::ptr::null(), // auth_service
-        false,            // tls_only
-    );
-
-    if system.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    // Bind TCP listener
-    papplSystemAddListeners(system, std::ptr::null());
-
-    papplSystemSetFooterHTML(system, c"Supvan Printer Application".as_ptr());
-
-    let mut version: pappl_version_t = Default::default();
-    crate::util::copy_to_c_buf(&mut version.name, b"supvan-printer-app");
-    crate::util::copy_to_c_buf(&mut version.sversion, b"1.0.0");
-    version.version = [1, 0, 0, 0];
-    papplSystemSetVersions(system, 1, &mut version);
-
-    // Register device schemes via pappl-rs trait thunks.
-    let sys = pappl_rs::System::from_raw(system);
-    sys.register_scheme::<BtScheme>();
-    sys.register_scheme::<UsbScheme>();
-
-    // Register printer drivers (all families).
-    // PAPPL stores the pointer directly (`system->drivers = drivers`) without
-    // copying, so the array must outlive the system. Leak the Vec.
-    let mut drivers: Vec<pappl_pr_driver_t> = models::families()
+    let drivers: Vec<pappl_pr_driver_t> = models::families()
         .iter()
         .map(|f| pappl_pr_driver_t {
             name: f.driver_name.as_ptr(),
@@ -100,31 +64,36 @@ pub unsafe extern "C" fn ks_system_cb(
             extension: std::ptr::null_mut(),
         })
         .collect();
-    let num_drivers = drivers.len() as i32;
-    let drivers_ptr = drivers.as_mut_ptr();
-    std::mem::forget(drivers);
-    papplSystemSetPrinterDrivers(
-        system,
-        num_drivers,
-        drivers_ptr,
-        Some(driver::ks_autoadd_cb),
-        None, // create_cb
-        Some(driver::ks_driver_cb),
-        std::ptr::null_mut(),
-    );
 
-    // Persist configuration
-    papplSystemSetSaveCallback(system, Some(ks_save_cb), std::ptr::null_mut());
-    papplSystemLoadState(system, state_path().as_ptr());
+    let sys = pappl_rs::SystemBuilder::new(c"supvan-printer-app")
+        .port(8631)
+        .options(
+            pappl_rs::SystemOptions::MULTI_QUEUE | pappl_rs::SystemOptions::WEB_INTERFACE,
+        )
+        .log_level(pappl_rs::LogLevel::Debug)
+        .log_file(c"-")
+        .default_listeners()
+        .footer_html(c"Supvan Printer Application")
+        .version(b"supvan-printer-app", b"1.0.0", [1, 0, 0, 0])
+        .scheme::<BtScheme>()
+        .scheme::<UsbScheme>()
+        .printer_drivers(
+            drivers,
+            Some(driver::ks_autoadd_cb),
+            Some(driver::ks_driver_cb),
+        )
+        .save_callback(Some(ks_save_cb))
+        .state_file(state_path().as_ref())
+        .build();
 
+    let sys = match sys {
+        Some(s) => s,
+        None => return std::ptr::null_mut(),
+    };
+
+    let system = sys.as_raw();
     prune_stale_usb_printers(system);
 
-    // Discover and auto-add printers. We must call this ourselves because
-    // PAPPL's _papplMainloopRunServer only auto-adds when it handles
-    // LoadState itself (which we do here instead).
-    //
-    // `papplSystemCreatePrinters` was added in PAPPL 1.4. The safe
-    // wrapper returns Err(Unsupported) on older PAPPL so this is portable.
     if sys.auto_add_printers(pappl_rs::DeviceType::LOCAL).is_err() {
         log::warn!(
             "Linked PAPPL lacks papplSystemCreatePrinters (pre-1.4); \

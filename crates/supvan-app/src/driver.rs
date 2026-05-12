@@ -9,8 +9,6 @@ use crate::models::{self, DriverFamily};
 use crate::raster;
 use crate::util::copy_to_c_buf;
 
-const MAX_PAPPL_MEDIA: usize = 256;
-
 /// Find the best matching media index for given dimensions (in hundredths of mm).
 pub fn find_best_media(family: &DriverFamily, w_hmm: c_int, h_hmm: c_int) -> Option<usize> {
     let mut best: Option<usize> = None;
@@ -60,96 +58,28 @@ pub unsafe extern "C" fn ks_driver_cb(
         None => return false,
     };
 
-    let d = &mut *data;
-
-    // Make and model
-    copy_to_c_buf(&mut d.make_and_model, &family.make_and_model);
-
-    // Format: PWG raster
-    d.format = c"application/vnd.cups-raster".as_ptr();
-    d.orient_default = ipp_orient_e_IPP_ORIENT_PORTRAIT;
-    d.quality_default = ipp_quality_e_IPP_QUALITY_NORMAL;
-
-    // Resolution
-    d.num_resolution = 1;
-    d.x_resolution[0] = family.dpi;
-    d.y_resolution[0] = family.dpi;
-    d.x_default = family.dpi;
-    d.y_default = family.dpi;
-
-    // Raster type
-    d.raster_types = pappl_raster_type_e_PAPPL_PWG_RASTER_TYPE_BLACK_1;
-    d.color_supported = pappl_color_mode_e_PAPPL_COLOR_MODE_MONOCHROME;
-    d.color_default = pappl_color_mode_e_PAPPL_COLOR_MODE_MONOCHROME;
-
-    // One-sided only
-    d.sides_supported = pappl_sides_e_PAPPL_SIDES_ONE_SIDED;
-    d.sides_default = pappl_sides_e_PAPPL_SIDES_ONE_SIDED;
-
-    // Label printer
-    d.borderless = true;
-    d.left_right = 0;
-    d.bottom_top = 0;
-    d.kind = pappl_kind_e_PAPPL_KIND_LABEL;
-    d.has_supplies = true;
-
-    // Darkness
-    d.darkness_configured = 50;
-    d.darkness_supported = 16;
-
-    // Label mode
-    d.mode_configured = pappl_label_mode_e_PAPPL_LABEL_MODE_TEAR_OFF as _;
-    d.mode_supported = pappl_label_mode_e_PAPPL_LABEL_MODE_TEAR_OFF as _;
-
-    // PPM
-    d.ppm = 1;
-
-    // Speed
-    d.speed_default = 0;
-    d.speed_supported[0] = 0;
-    d.speed_supported[1] = 0;
-
-    // Media sizes
-    let num_media = family.media_names.len().min(MAX_PAPPL_MEDIA) as c_int;
-    d.num_media = num_media;
-    for (i, name) in family
-        .media_names
-        .iter()
-        .enumerate()
-        .take(num_media as usize)
-    {
-        d.media[i] = name.as_ptr();
-    }
-
-    // Default media: first entry
-    fill_media_col(family, &mut d.media_default, 0);
-
-    // Sources / types
-    d.num_source = 1;
-    d.source[0] = c"main-roll".as_ptr();
-    d.num_type = 1;
-    d.type_[0] = c"labels".as_ptr();
-
-    // Media-ready: same as default
-    d.media_ready[0] = d.media_default;
-
-    // 16x16 dither matrix (tiled from 4x4 Bayer)
-    for r in 0..16 {
-        for c in 0..16 {
-            d.gdither[r][c] = dither::BAYER4[r % 4][c % 4];
-        }
-    }
-    d.pdither = d.gdither;
-
-    // Raster callbacks
-    d.rstartjob_cb = Some(raster::ks_rstartjob_cb);
-    d.rstartpage_cb = Some(raster::ks_rstartpage_cb);
-    d.rwriteline_cb = Some(raster::ks_rwriteline_cb);
-    d.rendpage_cb = Some(raster::ks_rendpage_cb);
-    d.rendjob_cb = Some(raster::ks_rendjob_cb);
-
-    // Status callback
-    d.status_cb = Some(raster::ks_status_cb);
+    pappl_rs::DriverDataBuilder::new()
+        .make_and_model(&family.make_and_model)
+        .format(c"application/vnd.cups-raster")
+        .orient_default(ipp_orient_e_IPP_ORIENT_PORTRAIT)
+        .quality_default(ipp_quality_e_IPP_QUALITY_NORMAL)
+        .ppm(1)
+        .resolution(family.dpi)
+        .monochrome()
+        .label_printer()
+        .darkness(50, 16)
+        .speed(0, [0, 0])
+        .media(&family.media_names, &family.media_sizes)
+        .dither_bayer4(&dither::BAYER4)
+        .raster_callbacks(
+            Some(raster::ks_rstartjob_cb),
+            Some(raster::ks_rstartpage_cb),
+            Some(raster::ks_rwriteline_cb),
+            Some(raster::ks_rendpage_cb),
+            Some(raster::ks_rendjob_cb),
+            Some(raster::ks_status_cb),
+        )
+        .build(&mut *data);
 
     true
 }
