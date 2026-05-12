@@ -252,30 +252,36 @@ impl KsDevice {
 
     /// Check if the underlying socket/fd is still connected.
     ///
-    /// Uses a zero-byte `recv(MSG_PEEK | MSG_DONTWAIT)` for sockets or
-    /// `poll()` for file descriptors. Returns `false` if the transport is
-    /// dead (ENOTCONN, POLLHUP, etc).
+    /// Peeks one byte non-blocking for sockets, or `poll()` for file
+    /// descriptors. Returns `false` if the transport is dead (peer FIN,
+    /// ENOTCONN, POLLHUP, etc).
     pub fn is_alive(&self) -> bool {
         let fd = match self.transport_fd {
             Some(fd) => fd,
             None => return false,
         };
         if self.use_socket_io {
+            // recv(len=0) is useless: it returns 0 for both healthy and
+            // peer-closed sockets, so we can't tell them apart. Peek one byte:
+            //   ret > 0  → data buffered, socket alive
+            //   ret == 0 → peer sent FIN, socket dead
+            //   ret < 0  → alive iff EAGAIN/EWOULDBLOCK
+            let mut buf = [0u8; 1];
             let ret = unsafe {
                 libc::recv(
                     fd,
-                    std::ptr::null_mut(),
-                    0,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    1,
                     libc::MSG_PEEK | libc::MSG_DONTWAIT,
                 )
             };
-            if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                // EAGAIN/EWOULDBLOCK means socket is alive but no data — that's fine
-                err.raw_os_error() == Some(libc::EAGAIN)
-                    || err.raw_os_error() == Some(libc::EWOULDBLOCK)
-            } else {
+            if ret > 0 {
                 true
+            } else if ret == 0 {
+                false
+            } else {
+                // On Linux EAGAIN == EWOULDBLOCK; either means socket is alive but no data.
+                std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN)
             }
         } else {
             let mut pfd = libc::pollfd {

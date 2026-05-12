@@ -34,13 +34,18 @@ impl Transport for BtTransport {
     }
 
     fn send_bulk_data(&self, data: &[u8], read_final_response: bool) -> Result<Option<Vec<u8>>> {
+        // The Android reference (`BasePrint.transferSplitData(..., true, ...)`
+        // called from `T50PlusPrint.transfer`) reads a response after EVERY
+        // 506-byte data packet, not only the last. The printer firmware acks
+        // each packet and seems to expect us to drain that ack before the
+        // next packet — otherwise the RX buffer accumulates leftover bytes
+        // that confuse the next BUF_FULL response read.
         let frames = build_data_frames(data);
         let mut last_resp = None;
         for (i, frame) in frames.iter().enumerate() {
             let is_last = i == frames.len() - 1;
-            let resp = self
-                .sock
-                .send_data_frame(frame, is_last && read_final_response)?;
+            let want_resp = if is_last { read_final_response } else { true };
+            let resp = self.sock.send_data_frame(frame, want_resp)?;
             if is_last {
                 last_resp = resp;
             }

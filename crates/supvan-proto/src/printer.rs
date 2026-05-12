@@ -101,10 +101,21 @@ impl Printer {
     }
 
     /// Wait for printing station to become active.
+    ///
+    /// Aborts early via `Error::InvalidResponse` if the printer raises an
+    /// error flag (label end, cover open, mode mismatch, etc.) — those
+    /// states cause the firmware to drop the BT link and beep, and there's
+    /// no point continuing the print.
     pub fn wait_printing(&self, max_attempts: usize) -> Result<Option<PrinterStatus>> {
         for _ in 0..max_attempts {
             let st = self.query_status()?;
             if let Some(ref s) = st {
+                if s.has_error() {
+                    return Err(Error::InvalidResponse(format!(
+                        "printer error after START_PRINT: {}",
+                        s.error_description().unwrap_or_default()
+                    )));
+                }
                 if s.printing {
                     return Ok(st);
                 }
@@ -120,6 +131,12 @@ impl Printer {
             std::thread::sleep(Duration::from_millis(20));
             let st = self.query_status()?;
             if let Some(ref s) = st {
+                if s.has_error() {
+                    return Err(Error::InvalidResponse(format!(
+                        "printer error while waiting for buffer: {}",
+                        s.error_description().unwrap_or_default()
+                    )));
+                }
                 if !s.buf_full {
                     return Ok(st);
                 }
@@ -131,7 +148,11 @@ impl Printer {
         Ok(None)
     }
 
-    /// Transfer a single compressed buffer: NEXT_ZIPPEDBULK -> data packets -> BUF_FULL.
+    /// Transfer the compressed print buffers as a single LZMA stream:
+    /// NEXT_ZIPPEDBULK -> data packets -> BUF_FULL.
+    ///
+    /// The printer's decoder splits the decompressed stream on 4096-byte
+    /// boundaries internally, so one transfer covers all the page's buffers.
     pub fn transfer_compressed(&self, compressed: &[u8], speed: u16) -> Result<()> {
         let compressed_len = compressed.len() as u16;
 
@@ -159,8 +180,13 @@ impl Printer {
             ));
         }
 
-        // Send data packets via the transport
-        self.transport.send_bulk_data(compressed, true)?;
+        // Send data packets via the transport. We do NOT read a response
+        // after the last frame: the protocol acks the bulk only via the
+        // BUF_FULL reply that follows. Polling for a non-existent response
+        // here blocks for the read timeout (2s on BT), during which the
+        // printer queues the bytes, times out waiting for BUF_FULL, errors
+        // (3-beep) and drops the RFCOMM link before BUF_FULL arrives.
+        self.transport.send_bulk_data(compressed, false)?;
 
         // 20ms delay after last data packet
         std::thread::sleep(Duration::from_millis(20));

@@ -47,7 +47,11 @@ pub fn compress_lzma(data: &[u8]) -> Result<Vec<u8>> {
 /// Compress concatenated print buffers for transfer.
 ///
 /// Takes a slice of 4096-byte print buffers, concatenates them, and compresses
-/// as a single LZMA stream. Returns (compressed_data, average_compressed_per_buffer).
+/// as a single LZMA stream. The printer's decoder reads the 14-byte header at
+/// each 4096-byte boundary internally, so a single LZMA stream covering N
+/// buffers is the right thing to send.
+///
+/// Returns (compressed_data, average_compressed_per_buffer).
 pub fn compress_buffers(
     buffers: &[[u8; crate::buffer::PRINT_BUF_SIZE]],
 ) -> Result<(Vec<u8>, usize)> {
