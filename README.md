@@ -50,6 +50,26 @@ Rust toolchain (edition 2021) and the following system packages:
 sudo apt install libpappl-dev libcups2-dev pkg-config libclang-dev libdbus-1-dev bluez
 ```
 
+### PAPPL version compatibility
+
+`pappl-sys` requires **PAPPL ≥ 1.0** at build time (a hard pkg-config check).
+Build behaviour vs the linked PAPPL version:
+
+| Linked PAPPL | Builds? | USB hot-plug auto-add | BT auto-add | Notes |
+|---|---|---|---|---|
+| `≥ 1.4` | ✅ | ✅ on service start | ✅ | Recommended. Uses `papplSystemCreatePrinters`. |
+| `1.0 – 1.3.x` | ✅ | ⚠ manual once | ✅ | Adds a one-line warning to the log on startup. `papplSystemCreatePrinters` isn't in the library; persisted printers reload normally, but a *newly* plugged USB device needs to be added once via the web UI (`http://localhost:8631/`) or `lpadmin`. After that it's persisted and works on every subsequent run. |
+| `< 1.0` | ❌ | — | — | pkg-config fails the build with a clear version error. |
+
+Distro PAPPL versions (as of writing) — pick your install path:
+
+- **PAPPL 1.4 (full auto-add):** Ubuntu 25.10+, Fedora 40+, Arch (current).
+- **PAPPL 1.3 (manual one-time add):** Debian 12/13/sid, Ubuntu 24.04 LTS, Linux Mint 22.x.
+- **PAPPL 1.0 (manual one-time add):** Debian 11 (oldoldstable), Ubuntu 22.04 LTS, Linux Mint 21.x.
+- **No system PAPPL (RHEL / Alma / Rocky):** build PAPPL yourself, or use `build-deb.sh` which ships PAPPL 1.4.9 alongside the app.
+
+On a distro with only PAPPL 1.3, you'll still get correct printing and the same protocol behaviour as PAPPL 1.4 — the only user-visible difference is that the first time a *new* USB device is plugged in, you have to add it manually once. BT discovery uses BlueZ D-Bus and isn't affected.
+
 ## Building and Installing
 
 ```sh

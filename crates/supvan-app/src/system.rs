@@ -143,14 +143,24 @@ pub unsafe extern "C" fn ks_system_cb(
     // Discover and auto-add printers. We must call this ourselves because
     // PAPPL's _papplMainloopRunServer only auto-adds when it handles
     // LoadState itself (which we do here instead).
-    // papplSystemCreatePrinters was added in PAPPL 1.4.
-    #[cfg(pappl_1_4)]
-    papplSystemCreatePrinters(
+    //
+    // `papplSystemCreatePrinters` was added in PAPPL 1.4. The wrapper in
+    // `pappl-sys` returns false on older PAPPL (compiled without the
+    // symbol) so this is portable. (Don't try a `#[cfg(pappl_1_4)]` here:
+    // `cargo:rustc-cfg` doesn't propagate from `pappl-sys` to dependent
+    // crates — that's the regression that hid USB auto-add in #2.)
+    let created = try_system_create_printers(
         system,
         pappl_devtype_e_PAPPL_DEVTYPE_LOCAL,
         None,
         std::ptr::null_mut(),
     );
+    if !created {
+        log::warn!(
+            "Linked PAPPL lacks papplSystemCreatePrinters (pre-1.4); \
+             relying on mainloop auto-add for printer discovery."
+        );
+    }
 
     system
 }

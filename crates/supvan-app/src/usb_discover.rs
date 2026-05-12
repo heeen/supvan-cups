@@ -6,7 +6,7 @@
 //! URIs use the USB serial number for stability across hotplug:
 //! `usbhid://SERIAL` (e.g. `usbhid://7E1222120101`).
 //! Devices without a serial number use a bus-topology URI instead:
-//! `usbhid://bus:BUSNUM-DEVPATH` (e.g. `usbhid://bus:1-2.3`).
+//! `usbhid://bus-BUSNUM-DEVPATH` (e.g. `usbhid://bus-1-2.3`).
 
 use std::fs;
 use std::path::Path;
@@ -74,7 +74,7 @@ where
             format!("usbhid://{serial}")
         } else if let Some(ref bus_path) = ids.bus_path {
             log::info!("usb_discover: {name_str}: no serial, using bus path {bus_path}");
-            format!("usbhid://bus:{bus_path}")
+            format!("usbhid://bus-{bus_path}")
         } else {
             log::warn!("usb_discover: {name_str}: no serial and no bus path, skipping");
             continue;
@@ -105,11 +105,14 @@ pub fn has_device() -> bool {
 ///
 /// The `id` is the part after `usbhid://` in the URI:
 /// - A serial number (e.g. "7E1222120101") — matched against USB serial
-/// - A bus path prefixed with "bus:" (e.g. "bus:1-2.3") — matched against sysfs topology
+/// - A bus path prefixed with "bus-" (e.g. "bus-1-2.3") — matched against sysfs topology
+///
+/// We use `bus-` rather than `bus:` because PAPPL's URI parser interprets a
+/// `:` in the authority as a port separator and rejects the URI.
 pub fn find_device_by_id(id: &str) -> Option<String> {
     let mut path = None;
     scan_hidraw_paths(|dev_path, ids| {
-        let matches = if let Some(bus_path) = id.strip_prefix("bus:") {
+        let matches = if let Some(bus_path) = id.strip_prefix("bus-") {
             ids.bus_path.as_deref() == Some(bus_path)
         } else {
             ids.serial.as_deref() == Some(id)

@@ -2,8 +2,17 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // Probe libpappl and libcups for include paths and link flags
-    let pappl = pkg_config::probe_library("pappl").expect("pkg-config: pappl not found");
+    // Probe libpappl and libcups for include paths and link flags.
+    //
+    // Floor at PAPPL 1.0 so the failure is a clear pkg-config error rather
+    // than a cryptic "undefined symbol" later. Anything ≥1.0 builds; the
+    // 1.4+ paths (e.g. papplSystemCreatePrinters auto-add) are guarded by
+    // wrappers in `lib.rs`, so older PAPPL still works with a degraded
+    // discovery path.
+    let pappl = pkg_config::Config::new()
+        .atleast_version("1.0")
+        .probe("pappl")
+        .expect("pkg-config: pappl not found (need ≥1.0)");
     let cups = pkg_config::probe_library("cups").expect("pkg-config: cups not found");
 
     let mut builder = bindgen::Builder::default()
@@ -42,6 +51,11 @@ fn main() {
 
     // Emit cfg flags based on PAPPL version for optional API usage.
     // papplSystemCreatePrinters was added in PAPPL 1.4.
+    //
+    // Note: `cargo:rustc-cfg` applies only to *this* crate. Dependent
+    // crates can't read it; they must call the wrapper exposed in
+    // `lib.rs` (e.g. `try_system_create_printers`).
+    println!("cargo:rustc-check-cfg=cfg(pappl_1_4)");
     {
         let parts: Vec<u32> = pappl
             .version
