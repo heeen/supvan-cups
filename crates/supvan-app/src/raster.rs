@@ -9,7 +9,40 @@ use crate::device;
 use crate::dither::dither_line;
 use crate::driver::{fill_media_col, find_best_media};
 use crate::dump::PgmAccumulator;
-use crate::job::KsJob;
+use crate::job::{JobFailure, KsJob};
+
+/// Surface a `JobFailure` to PAPPL/CUPS:
+///   - `papplPrinterSetReasons` adds the matching state-reason flag
+///     (media-empty, cover-open, media-jam, offline, …) so it shows up
+///     in `printer-state-reasons` for any IPP/CUPS UI.
+///   - `papplJobSetReasons` marks the job canceled-at-device and
+///     errors-detected so the job ends with a non-success state.
+///   - `papplJobSetMessage` sets `job-state-message` to our text.
+///   - `papplLogJob` logs the message at ERROR level.
+///
+/// Note: state-reasons set on the printer here persist until the
+/// status callback (which queries the printer and clears flags that
+/// no longer apply) runs again.
+unsafe fn report_job_failure(
+    job: *mut pappl_job_t,
+    printer: *mut pappl_printer_t,
+    fail: &JobFailure,
+) {
+    let cmsg = std::ffi::CString::new(fail.message.as_str())
+        .unwrap_or_else(|_| std::ffi::CString::new("print failed").unwrap());
+
+    if !printer.is_null() && fail.preason != 0 {
+        papplPrinterSetReasons(printer, fail.preason, 0);
+    }
+    papplJobSetReasons(
+        job,
+        pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE
+            | pappl_jreason_e_PAPPL_JREASON_ERRORS_DETECTED,
+        pappl_jreason_e_PAPPL_JREASON_NONE,
+    );
+    papplJobSetMessage(job, cmsg.as_ptr());
+    papplLogJob(job, pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR, cmsg.as_ptr());
+}
 use crate::models;
 use crate::printer_device::{KsDevice, PAPPL_PREASON_NONE, PAPPL_PREASON_OFFLINE};
 use crate::util::copy_to_c_buf;
@@ -74,19 +107,9 @@ pub unsafe extern "C" fn ks_rstartjob_cb(
         .unwrap_or(384);
 
     let mut ks_job = match KsJob::start(dev, w, h, bpl, density, printhead_width_dots) {
-        Some(j) => j,
-        None => {
-            papplLogJob(
-                job,
-                pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR,
-                c"Job start failed (device not ready, timeout, or printer error - check RUST_LOG=info)"
-                    .as_ptr(),
-            );
-            papplJobSetReasons(
-                job,
-                pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE,
-                pappl_jreason_e_PAPPL_JREASON_NONE,
-            );
+        Ok(j) => j,
+        Err(fail) => {
+            report_job_failure(job, papplJobGetPrinter(job), &fail);
             return false;
         }
     };
@@ -173,18 +196,8 @@ pub unsafe extern "C" fn ks_rendpage_cb(
         if copies > 1 {
             log::info!("ks_rendpage_cb: printing copy {}/{copies}", copy + 1);
         }
-        if !ks_job.end_page(dev) {
-            papplLogJob(
-                job,
-                pappl_loglevel_e_PAPPL_LOGLEVEL_ERROR,
-                c"Page transfer failed (device error, timeout, or transfer - check RUST_LOG=info)"
-                    .as_ptr(),
-            );
-            papplJobSetReasons(
-                job,
-                pappl_jreason_e_PAPPL_JREASON_JOB_CANCELED_AT_DEVICE,
-                pappl_jreason_e_PAPPL_JREASON_NONE,
-            );
+        if let Err(fail) = ks_job.end_page(dev) {
+            report_job_failure(job, papplJobGetPrinter(job), &fail);
             return false;
         }
     }

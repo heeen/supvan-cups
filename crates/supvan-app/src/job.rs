@@ -3,10 +3,73 @@ use std::sync::atomic::Ordering;
 use supvan_proto::bitmap::{center_in_printhead, raster_to_column_major, DEFAULT_MARGIN_DOTS};
 use supvan_proto::buffer::split_into_buffers;
 use supvan_proto::compress::compress_buffers;
+use supvan_proto::error::Error as ProtoError;
 use supvan_proto::speed::calc_speed;
+use supvan_proto::status::PrinterStatus;
 
 use crate::dump::{dump_pbm, dump_printhead_pbm, PgmAccumulator};
-use crate::printer_device::KsDevice;
+use crate::printer_device::{
+    KsDevice, PAPPL_PREASON_COVER_OPEN, PAPPL_PREASON_MEDIA_EMPTY, PAPPL_PREASON_MEDIA_JAM,
+    PAPPL_PREASON_NONE, PAPPL_PREASON_OFFLINE, PAPPL_PREASON_OTHER,
+};
+
+/// Failure of a print job, carrying the PAPPL reason flags and a
+/// human-readable message so callers can surface it to CUPS / IPP clients.
+pub struct JobFailure {
+    /// Bits to OR into `papplPrinterSetReasons`.
+    pub preason: u32,
+    /// Short message, suitable for `papplJobSetMessage` and the job log.
+    pub message: String,
+}
+
+impl JobFailure {
+    pub fn other(msg: impl Into<String>) -> Self {
+        Self {
+            preason: PAPPL_PREASON_OTHER,
+            message: msg.into(),
+        }
+    }
+
+    /// Translate a printer status with at least one error flag set into
+    /// PAPPL reasons + a message. Falls back to `OTHER` if no specific
+    /// flag matches.
+    pub fn from_status(s: &PrinterStatus, context: &str) -> Self {
+        let mut preason = PAPPL_PREASON_NONE;
+        if s.cover_open {
+            preason |= PAPPL_PREASON_COVER_OPEN;
+        }
+        if s.label_end || s.label_not_installed {
+            preason |= PAPPL_PREASON_MEDIA_EMPTY;
+        }
+        if s.label_rw_error || s.label_mode_error || s.ribbon_rw_error {
+            preason |= PAPPL_PREASON_MEDIA_JAM;
+        }
+        if preason == PAPPL_PREASON_NONE {
+            preason = PAPPL_PREASON_OTHER;
+        }
+        let desc = s.error_description().unwrap_or_else(|| "unknown".into());
+        Self {
+            preason,
+            message: format!("{context}: {desc}"),
+        }
+    }
+
+    /// Translate a transport-level error. ENOTCONN / IO failures map to
+    /// OFFLINE; everything else to OTHER.
+    pub fn from_proto(e: ProtoError, context: &str) -> Self {
+        let preason = match &e {
+            ProtoError::Io(io) if io.raw_os_error() == Some(libc::ENOTCONN) => {
+                PAPPL_PREASON_OFFLINE
+            }
+            ProtoError::Io(_) => PAPPL_PREASON_OFFLINE,
+            _ => PAPPL_PREASON_OTHER,
+        };
+        Self {
+            preason,
+            message: format!("{context}: {e}"),
+        }
+    }
+}
 
 /// Opaque job handle accumulating raster scanlines.
 pub struct KsJob {
@@ -22,81 +85,23 @@ pub struct KsJob {
 }
 
 impl KsJob {
-    /// Start a print job: runs CHECK_DEVICE -> wait_ready -> START_PRINT -> wait_printing.
-    ///
-    /// In mock mode, skips all printer protocol and just allocates the raster buffer.
+    /// Allocate the raster buffer. No printer protocol runs here: the
+    /// entire CHECK_DEVICE → wait_ready → START_PRINT → … sequence happens
+    /// in `end_page` via `print_compressed`, so CUPS drives the printer
+    /// with the same single-shot flow as the CLI's test-print. Doing the
+    /// CHECK_DEVICE early adds idle time before START_PRINT and an extra
+    /// command frame the CLI doesn't send.
     pub fn start(
-        dev: &KsDevice,
+        _dev: &KsDevice,
         w: u32,
         h: u32,
         bpl: u32,
         density: u8,
         printhead_width_dots: u32,
-    ) -> Option<Box<Self>> {
-        let mock = dev.is_mock();
+    ) -> Result<Box<Self>, JobFailure> {
+        log::info!("KsJob::start: {w}x{h}, bpl={bpl}, density={density}, printhead={printhead_width_dots}");
 
-        log::info!("KsJob::start: {w}x{h}, bpl={bpl}, density={density}, printhead={printhead_width_dots}, mock={mock}");
-
-        if let Some(ref printer) = dev.printer {
-            log::debug!("KsJob::start: CHECK_DEVICE");
-            match printer.check_device() {
-                Ok(true) => {}
-                Ok(false) => {
-                    log::error!("KsJob::start: CHECK_DEVICE failed");
-                    return None;
-                }
-                Err(e) => {
-                    log::error!("KsJob::start: CHECK_DEVICE error: {e}");
-                    return None;
-                }
-            }
-
-            log::debug!("KsJob::start: waiting for ready");
-            match printer.wait_ready(60) {
-                Ok(Some(s)) => {
-                    if s.has_error() {
-                        log::error!(
-                            "KsJob::start: printer error: {}",
-                            s.error_description().unwrap_or_default()
-                        );
-                        return None;
-                    }
-                }
-                Ok(None) => {
-                    log::error!("KsJob::start: timeout waiting for device ready");
-                    return None;
-                }
-                Err(e) => {
-                    log::error!("KsJob::start: wait_ready error: {e}");
-                    return None;
-                }
-            }
-
-            log::debug!("KsJob::start: START_PRINT");
-            if let Err(e) = printer.start_print() {
-                log::error!("KsJob::start: START_PRINT error: {e}");
-                return None;
-            }
-
-            log::debug!("KsJob::start: waiting for printing station");
-            match printer.wait_printing(60) {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    log::error!("KsJob::start: timeout waiting for printing station");
-                    return None;
-                }
-                Err(e) => {
-                    log::error!("KsJob::start: wait_printing error: {e}");
-                    return None;
-                }
-            }
-
-            dev.printing.store(true, Ordering::Release);
-        } else {
-            log::debug!("KsJob::start: mock — skipping printer protocol");
-        }
-
-        Some(Box::new(KsJob {
+        Ok(Box::new(KsJob {
             width: w,
             height: h,
             bytes_per_line: bpl,
@@ -131,7 +136,7 @@ impl KsJob {
     }
 
     /// Process and transfer a completed page.
-    pub fn end_page(&mut self, dev: &KsDevice) -> bool {
+    pub fn end_page(&mut self, dev: &KsDevice) -> Result<(), JobFailure> {
         let mock = dev.is_mock();
 
         log::info!(
@@ -189,8 +194,7 @@ impl KsJob {
         let (compressed, avg) = match compress_buffers(&buffers) {
             Ok(r) => r,
             Err(e) => {
-                log::error!("KsJob::end_page: compression failed: {e}");
-                return false;
+                return Err(JobFailure::other(format!("compression failed: {e}")));
             }
         };
         let speed = calc_speed(avg);
@@ -202,42 +206,40 @@ impl KsJob {
             speed,
         );
 
-        // 5+6: Transfer (real mode only)
+        // 5+6: Transfer (real mode only). Delegate the entire print flow
+        // (CHECK_DEVICE → wait_ready → START_PRINT → wait_printing →
+        //  wait_buffer_ready → transfer → poll completion) to the same
+        // `print_compressed` function that the CLI's `test-print` uses, so
+        // CUPS and CLI are guaranteed to drive the printer identically.
+        //
+        // We keep `dev.printing` as a sentinel only for the (concurrent)
+        // status callback; `print_compressed` already handles the START
+        // sequencing for us.
         if let Some(ref printer) = dev.printer {
-            log::debug!("KsJob::end_page: wait_buffer_ready");
-            match printer.wait_buffer_ready(200) {
-                Ok(Some(s)) => {
-                    if s.has_error() {
-                        log::error!(
-                            "KsJob::end_page: printer error: {}",
-                            s.error_description().unwrap_or_default()
-                        );
-                        return false;
-                    }
-                }
-                Ok(None) => {
-                    log::error!("KsJob::end_page: timeout waiting for buffer space");
-                    return false;
-                }
-                Err(e) => {
-                    log::error!("KsJob::end_page: wait_buffer_ready error: {e}");
-                    return false;
-                }
-            }
-
-            log::debug!(
-                "KsJob::end_page: transfer_compressed ({} bytes)",
+            log::info!(
+                "KsJob::end_page: print_compressed density={} compressed_bytes={}",
+                self.density,
                 compressed.len()
             );
-            if let Err(e) = printer.transfer_compressed(&compressed, speed) {
-                log::error!("KsJob::end_page: transfer failed: {e}");
-                return false;
+            dev.printing.store(true, Ordering::Release);
+            let result = printer.print_compressed(&compressed, speed);
+            dev.printing.store(false, Ordering::Release);
+            if let Err(e) = result {
+                if let ProtoError::InvalidResponse(msg) = &e {
+                    if let Ok(Some(s)) = printer.query_status() {
+                        if s.has_error() {
+                            return Err(JobFailure::from_status(&s, "print_compressed"));
+                        }
+                    }
+                    return Err(JobFailure::other(msg.clone()));
+                }
+                return Err(JobFailure::from_proto(e, "print_compressed"));
             }
         } else {
             log::info!("KsJob::end_page: mock — skipping BT transfer");
         }
 
-        true
+        Ok(())
     }
 
     /// Clear the raster buffer for the next page.
