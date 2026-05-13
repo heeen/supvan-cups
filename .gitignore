@@ -17,3 +17,9 @@ __pycache__/
 # Total Recall memory (personal, session-specific)
 CLAUDE.local.md
 memory/
+
+# Local PAPPL source / Debian package drops (not vendored in-repo)
+/pappl-1.4.9/
+/pappl*.tar.gz
+/pappl*.tar.xz
+/pappl*.dsc

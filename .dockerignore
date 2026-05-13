@@ -1,0 +1,6 @@
+/target/
+pappl-1.4.9/
+pappl*.tar.gz
+pappl*.tar.xz
+pappl*.dsc
+.git
