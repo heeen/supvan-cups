@@ -211,3 +211,43 @@ fn main() {
         Command::Discover => cmd_discover(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Command};
+    use clap::Parser;
+
+    #[test]
+    fn parse_probe_with_target() {
+        let cli = Cli::try_parse_from(["supvan-cli", "probe", "/dev/hidraw3"]).unwrap();
+        match cli.command {
+            Command::Probe { target } => assert_eq!(target, "/dev/hidraw3"),
+            _ => panic!("expected Probe"),
+        }
+    }
+
+    #[test]
+    fn parse_test_print_density() {
+        let cli = Cli::try_parse_from([
+            "supvan-cli",
+            "test-print",
+            "AA:BB:CC:DD:EE:FF",
+            "--density",
+            "7",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::TestPrint { target, density } => {
+                assert_eq!(target, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(density, 7);
+            }
+            _ => panic!("expected TestPrint"),
+        }
+    }
+
+    #[test]
+    fn parse_discover() {
+        let cli = Cli::try_parse_from(["supvan-cli", "discover"]).unwrap();
+        assert!(matches!(cli.command, Command::Discover));
+    }
+}

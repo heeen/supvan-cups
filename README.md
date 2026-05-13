@@ -92,6 +92,18 @@ Re-plug the USB printer after installing the udev rule.
 
 To uninstall: `sudo make uninstall`.
 
+## Testing
+
+Run the Rust unit and integration tests (all workspace crates, no hardware):
+
+```sh
+cargo test --workspace
+```
+
+End-to-end printing against a real printer is exercised manually via
+`supvan-cli` (see below) or through CUPS; there is no automated IPP job
+test in CI by default.
+
 ## Usage
 
 ### Printer Application

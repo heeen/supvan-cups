@@ -117,3 +117,60 @@ pub unsafe extern "C" fn ks_autoadd_cb(
     // Fallback: T50 family
     models::default_family().driver_name.as_ptr()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::{c_char, CString};
+
+    use super::*;
+    use crate::models::DriverFamily;
+
+    fn test_family() -> DriverFamily {
+        DriverFamily {
+            driver_name: CString::new("test_driver").unwrap(),
+            description: CString::new("Test").unwrap(),
+            make_and_model: b"TestCo Model X".to_vec(),
+            device_id: CString::new("MFG:Test;MDL:X;").unwrap(),
+            dpi: 203,
+            printhead_width_dots: 384,
+            media_names: vec![
+                CString::new("30x20mm").unwrap(),
+                CString::new("40x30mm").unwrap(),
+            ],
+            media_sizes: vec![[3000, 2000], [4000, 3000]],
+        }
+    }
+
+    fn c_buf_as_bytes(buf: &[c_char]) -> Vec<u8> {
+        buf.iter()
+            .map_while(|&c| {
+                if c == 0 {
+                    None
+                } else {
+                    Some(c as u8)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn find_best_media_picks_closest() {
+        let f = test_family();
+        assert_eq!(find_best_media(&f, 3010, 2010), Some(0));
+        assert_eq!(find_best_media(&f, 4000, 3000), Some(1));
+    }
+
+    #[test]
+    fn fill_media_col_sets_size_and_roll_labels() {
+        let f = test_family();
+        let mut col: pappl_media_col_t = unsafe { std::mem::zeroed() };
+        fill_media_col(&f, &mut col, 1);
+        assert_eq!(col.size_width, 4000);
+        assert_eq!(col.size_length, 3000);
+        assert_eq!(c_buf_as_bytes(&col.size_name), b"40x30mm");
+        assert_eq!(c_buf_as_bytes(&col.source), b"main-roll");
+        assert_eq!(c_buf_as_bytes(&col.type_), b"labels");
+        assert_eq!(col.left_margin, 0);
+        assert_eq!(col.right_margin, 0);
+    }
+}

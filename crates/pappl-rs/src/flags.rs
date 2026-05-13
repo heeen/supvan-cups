@@ -223,3 +223,46 @@ impl TryFrom<pappl_loglevel_t> for LogLevel {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_level_try_from_roundtrip() {
+        for level in [
+            LogLevel::Unspec,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+            LogLevel::Fatal,
+        ] {
+            let raw: pappl_loglevel_t = level.into();
+            let back = LogLevel::try_from(raw).unwrap();
+            assert_eq!(back, level);
+        }
+        assert!(matches!(
+            LogLevel::try_from(99),
+            Err(InvalidLogLevel(99))
+        ));
+    }
+
+    #[test]
+    fn system_options_from_bits_truncate() {
+        let raw: pappl_soptions_t = pappl_soptions_e_PAPPL_SOPTIONS_MULTI_QUEUE
+            | pappl_soptions_e_PAPPL_SOPTIONS_WEB_INTERFACE;
+        let opts = SystemOptions::from(raw);
+        assert!(opts.contains(SystemOptions::MULTI_QUEUE));
+        assert!(opts.contains(SystemOptions::WEB_INTERFACE));
+        assert_eq!(opts.bits(), raw);
+    }
+
+    #[test]
+    fn device_type_from_bits_truncate() {
+        let raw: pappl_devtype_t = pappl_devtype_e_PAPPL_DEVTYPE_LOCAL;
+        let dt = DeviceType::from(raw);
+        assert!(dt.contains(DeviceType::LOCAL));
+        assert_eq!(dt.bits(), raw);
+    }
+}
+

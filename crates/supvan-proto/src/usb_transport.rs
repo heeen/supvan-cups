@@ -319,8 +319,7 @@ mod tests {
 
     #[test]
     fn test_validate_usb_response() {
-        // USB responses don't echo command byte; any non-empty response is valid
-        assert!(!Vec::<u8>::new().is_empty() || true); // placeholder for is_empty check
+        // USB responses don't echo command byte; validation treats any non-empty slice as ok.
         let resp = [0x08_u8];
         assert!(!resp.is_empty());
         let empty: &[u8] = &[];

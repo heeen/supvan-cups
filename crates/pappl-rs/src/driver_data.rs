@@ -234,3 +234,86 @@ impl<'a> DriverDataBuilder<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    fn c_buf_prefix(buf: &[std::ffi::c_char], prefix: &[u8]) -> bool {
+        let n = prefix.len().min(buf.len());
+        buf[..n].iter().zip(prefix).all(|(&c, &b)| c == b as std::ffi::c_char)
+    }
+
+    #[test]
+    fn driver_data_builder_resolution_media_dither() {
+        let n_a4 = CString::new("iso_a4_210x297mm").unwrap();
+        let n_letter = CString::new("na_letter_8.5x11in").unwrap();
+        let names: [&CString; 2] = [&n_a4, &n_letter];
+        let sizes = [[2100, 2970], [2159, 2794]];
+        let bayer: [[u8; 4]; 4] = [
+            [1, 2, 3, 4],
+            [5, 6, 7, 8],
+            [9, 10, 11, 12],
+            [13, 14, 15, 16],
+        ];
+        let fmt = c"application/vnd.cups-raster";
+
+        let mut data: pappl_pr_driver_data_s = unsafe { std::mem::zeroed() };
+
+        unsafe {
+            DriverDataBuilder::new()
+                .make_and_model(b"UnitTest Printer")
+                .format(fmt)
+                .orient_default(ipp_orient_e_IPP_ORIENT_PORTRAIT)
+                .quality_default(ipp_quality_e_IPP_QUALITY_NORMAL)
+                .ppm(1)
+                .resolution(203)
+                .monochrome()
+                .label_printer()
+                .darkness(50, 16)
+                .speed(0, [0, 0])
+                .media(&names, &sizes)
+                .dither_bayer4(&bayer)
+                .build(&mut data);
+        }
+
+        assert_eq!(data.num_resolution, 1);
+        assert_eq!(data.x_resolution[0], 203);
+        assert_eq!(data.y_resolution[0], 203);
+        assert_eq!(data.x_default, 203);
+        assert_eq!(data.y_default, 203);
+
+        assert_eq!(data.format, fmt.as_ptr());
+        assert!(c_buf_prefix(&data.make_and_model, b"UnitTest Printer"));
+
+        assert!(data.borderless);
+        assert_eq!(data.kind, pappl_kind_e_PAPPL_KIND_LABEL);
+        assert_eq!(
+            data.color_default,
+            pappl_color_mode_e_PAPPL_COLOR_MODE_MONOCHROME
+        );
+        assert_eq!(data.darkness_configured, 50);
+        assert_eq!(data.darkness_supported, 16);
+        assert_eq!(data.speed_default, 0);
+        assert_eq!(data.speed_supported, [0, 0]);
+
+        assert_eq!(data.num_media, 2);
+        assert_eq!(data.media[0], n_a4.as_ptr());
+        assert_eq!(data.media[1], n_letter.as_ptr());
+        assert_eq!(data.num_source, 1);
+        assert_eq!(data.source[0], c"main-roll".as_ptr());
+        assert_eq!(data.num_type, 1);
+        assert_eq!(data.type_[0], c"labels".as_ptr());
+
+        assert_eq!(data.media_default.size_width, sizes[0][0]);
+        assert_eq!(data.media_default.size_length, sizes[0][1]);
+
+        for r in 0..16usize {
+            for c in 0..16usize {
+                assert_eq!(data.gdither[r][c], bayer[r % 4][c % 4]);
+                assert_eq!(data.pdither[r][c], data.gdither[r][c]);
+            }
+        }
+    }
+}
