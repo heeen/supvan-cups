@@ -157,6 +157,24 @@ supvan-cli test-print /dev/hidraw7 --density 4
 | `SUPVAN_HOST` | Bind address (default: `0.0.0.0`) |
 | `SUPVAN_PORT` | IPP HTTP port (default: `8631`) |
 | `IPP_PRINTER_APP_POLL_SECS` | Status-poll cadence in seconds (default: `30`) |
+| `SUPVAN_MOCK_DELAY_MS` | Mock transfer delay per page (default: `0`) |
+| `SUPVAN_MOCK_FAIL` | Mock single-shot failure reasons, e.g. `media-empty,cover-open` |
+| `SUPVAN_MOCK_FAIL_REPEAT` | `=1` re-arms `SUPVAN_MOCK_FAIL` after each consumption |
+| `SUPVAN_MOCK_STICKY` | Mock sticky `printer-state-reasons` (same token syntax) |
+| `SUPVAN_MOCK_RECOVER_AFTER_MS` | Sticky reasons auto-clear after N ms |
+
+## Testing without burning labels
+
+Run the printer application with `SUPVAN_MOCK=1` and every page lands as PBM
+under `$XDG_RUNTIME_DIR/supvan-mock/` (or `SUPVAN_DUMP_DIR` if set) with a
+JSON manifest alongside — no bytes reach the device. Inspect the dumps before
+re-running for real. To exercise the IPP error surface end-to-end without a
+physical fault, layer on `SUPVAN_MOCK_FAIL=media-empty,cover-open` (single
+shot) or `SUPVAN_MOCK_STICKY=cover-open SUPVAN_MOCK_RECOVER_AFTER_MS=10000`
+(sticky `printer-state-reasons` that auto-clears after 10 s). Tokens:
+`media-empty`, `label-not-installed`, `media-jam`, `label-rw-error`,
+`label-mode-error`, `ribbon-rw-error`, `ribbon-end`, `media-needed`,
+`cover-open`, `head-temp-high`, `other`.
 
 ## License
 

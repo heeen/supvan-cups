@@ -8,6 +8,7 @@ mod dump;
 mod ipp_job;
 mod ipp_server;
 mod job;
+mod mock;
 mod models;
 mod printer_device;
 mod usb_discover;

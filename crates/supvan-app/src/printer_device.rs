@@ -85,7 +85,7 @@ impl KsDevice {
 
         let printer = match &self.printer {
             Some(p) => p,
-            None => return PrinterReason::empty(),
+            None => return crate::mock::controller().current_reasons(),
         };
 
         if self.printing.load(Ordering::Acquire) {

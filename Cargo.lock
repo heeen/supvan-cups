@@ -1136,6 +1136,7 @@ dependencies = [
  "parking_lot",
  "print_raster",
  "serde",
+ "serde_json",
  "supvan-proto",
  "tokio",
  "tokio-util",

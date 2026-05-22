@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use ipp_printer_app::{JobFailure, JobOptions, PrinterHandle, PrinterReason, RasterDriver};
 use supvan_proto::bitmap::{center_in_printhead, raster_to_column_major, DEFAULT_MARGIN_DOTS};
@@ -10,9 +11,19 @@ use supvan_proto::status::PrinterStatus;
 
 use crate::device;
 use crate::dither::dither_line;
-use crate::dump::{dump_pbm, dump_printhead_pbm, PgmAccumulator};
+use crate::dump::{dumps_enabled, JobDump, JobManifest, PgmAccumulator};
+use crate::mock;
 use crate::models;
 use crate::printer_device::KsDevice;
+
+/// Minimal RFC-3339-ish timestamp without pulling chrono.
+fn now_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("unix:{secs}")
+}
 
 pub fn failure_from_status(s: &PrinterStatus, context: &str) -> JobFailure {
     let mut reasons = PrinterReason::empty();
@@ -91,32 +102,29 @@ impl KsJob {
     }
 
     pub fn transfer_page(&mut self, dev: &KsDevice) -> Result<(), JobFailure> {
-        let mock = dev.is_mock();
+        let is_mock = dev.is_mock();
+        let started = Instant::now();
         log::info!(
             "KsJob::transfer_page: {}x{}, {} lines, mock={}",
             self.width,
             self.height,
             self.lines_received,
-            mock
+            is_mock,
         );
 
-        if let Some(ref acc) = self.pgm_acc {
-            acc.flush();
+        // Allocate one dump seq per page so all per-page artefacts share NNNN.
+        let dump = JobDump::allocate();
+
+        if let Some(acc) = self.pgm_acc.take() {
+            dump.pgm(&acc);
         }
-        self.pgm_acc = None;
-
-        dump_pbm(
-            &self.raster_data,
-            self.width,
-            self.height,
-            self.bytes_per_line,
-        );
+        dump.pbm(&self.raster_data, self.width, self.height, self.bytes_per_line);
 
         let (col_data, num_cols, _) =
             raster_to_column_major(&self.raster_data, self.width, self.height);
         let (canvas, canvas_bpl) =
             center_in_printhead(&col_data, num_cols, self.width, self.printhead_width_dots);
-        dump_printhead_pbm(&canvas, num_cols, canvas_bpl, self.printhead_width_dots);
+        dump.printhead_pbm(&canvas, num_cols, canvas_bpl, self.printhead_width_dots);
 
         let buffers = split_into_buffers(
             &canvas,
@@ -131,25 +139,59 @@ impl KsJob {
             compress_buffers(&buffers).map_err(|e| JobFailure::other(format!("compression: {e}")))?;
         let speed = calc_speed(avg);
 
-        if let Some(ref printer) = dev.printer {
+        let outcome: Result<(), JobFailure> = if let Some(ref printer) = dev.printer {
             dev.printing.store(true, Ordering::Release);
             let result = printer.print_compressed(&compressed, speed);
             dev.printing.store(false, Ordering::Release);
-            if let Err(e) = result {
-                if let ProtoError::InvalidResponse(msg) = &e {
+            match result {
+                Ok(()) => Ok(()),
+                Err(ProtoError::InvalidResponse(msg)) => {
                     if let Ok(Some(s)) = printer.query_status() {
                         if s.has_error() {
-                            return Err(failure_from_status(&s, "print_compressed"));
+                            Err(failure_from_status(&s, "print_compressed"))
+                        } else {
+                            Err(JobFailure::other(msg))
                         }
+                    } else {
+                        Err(JobFailure::other(msg))
                     }
-                    return Err(JobFailure::other(msg.clone()));
                 }
-                return Err(failure_from_proto(e, "print_compressed"));
+                Err(e) => Err(failure_from_proto(e, "print_compressed")),
             }
         } else {
-            log::info!("KsJob::transfer_page: mock — skipping transfer");
-        }
-        Ok(())
+            // Mock device: simulate the print delay, then check the simulator
+            // for a queued failure. Dumps already happened above so the operator
+            // can still inspect the output even on a simulated abort.
+            std::thread::sleep(mock::controller().delay());
+            match mock::controller().take_print_failure() {
+                Some(f) => Err(f),
+                None => {
+                    log::info!("KsJob::transfer_page: mock — dumped, no transfer");
+                    Ok(())
+                }
+            }
+        };
+
+        // Manifest reflects what really happened (real or simulated).
+        let (sim_outcome, _len) = match &outcome {
+            Ok(()) => ("completed".to_string(), 0usize),
+            Err(f) => (format!("aborted: {}", f.message), 0),
+        };
+        dump.manifest(&JobManifest {
+            timestamp: now_iso(),
+            printer_name: String::new(),
+            width: self.width,
+            height: self.height,
+            bytes_per_line: self.bytes_per_line,
+            density: self.density,
+            printhead_width_dots: self.printhead_width_dots,
+            copies: 1,
+            mock: is_mock,
+            simulated_outcome: sim_outcome,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
+
+        outcome
     }
 
     pub fn clear_page(&mut self) {
@@ -201,7 +243,7 @@ impl RasterDriver for KsJob {
         let printhead_width_dots = printer.printhead_width_dots();
 
         let mut ks = KsJob::start(dev, w, h, bpl, density, printhead_width_dots)?;
-        if options.bits_per_pixel() == 8 && std::env::var("SUPVAN_DUMP_DIR").is_ok() {
+        if options.bits_per_pixel() == 8 && dumps_enabled() {
             ks.pgm_acc = Some(PgmAccumulator::new(w, h));
         }
         Ok(ks)
