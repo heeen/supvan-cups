@@ -1,7 +1,7 @@
 # Supvan Printer Driver
 
-Linux printer driver for Supvan thermal label printers. Provides an
-IPP Everywhere printer application via [PAPPL](https://www.msweet.org/pappl/)
+Linux printer driver for Supvan thermal label printers. Provides a
+**Rust IPP Everywhere** printer application (`ipp-printer-app` + Axum on port 8631)
 and a command-line diagnostic tool.
 
 The printer protocol was reverse-engineered from the Katasymbol Android
@@ -37,38 +37,22 @@ recompilation.
 | Crate | Description |
 |-------|-------------|
 | `supvan-proto` | Printer protocol: Bluetooth RFCOMM and USB HID transports, commands, status parsing, bitmap transforms, LZMA compression |
-| `pappl-sys` | Bindgen FFI bindings for libpappl and libcups |
-| `supvan-app` | PAPPL printer application binary (`supvan-printer-app`) |
+| `ipp-printer-app` | Generic IPP Everywhere framework (`ipp` + Axum + `print_raster`, optional mDNS via `mdns-sd`). Device-agnostic; a consumer crate plugs in a `DeviceBackend` + `RasterDriver`. |
+| `supvan-app` | Printer application binary (`supvan-printer-app`) |
 | `supvan-cli` | Command-line diagnostic tool (`supvan-cli`) |
 
 ## Prerequisites
 
-Rust toolchain (edition 2021) and the following system packages:
+Rust toolchain (edition 2021) and:
 
 ```sh
 # Debian / Ubuntu
-sudo apt install libpappl-dev libcups2-dev pkg-config libclang-dev libdbus-1-dev bluez
+sudo apt install libcups2-dev pkg-config libdbus-1-dev bluez
 ```
 
-### PAPPL version compatibility
+No `libpappl-dev` is required — the IPP stack is pure Rust.
 
-`pappl-sys` requires **PAPPL ≥ 1.0** at build time (a hard pkg-config check).
-Build behaviour vs the linked PAPPL version:
-
-| Linked PAPPL | Builds? | USB hot-plug auto-add | BT auto-add | Notes |
-|---|---|---|---|---|
-| `≥ 1.4` | ✅ | ✅ on service start | ✅ | Recommended. Uses `papplSystemCreatePrinters`. |
-| `1.0 – 1.3.x` | ✅ | ⚠ manual once | ✅ | Adds a one-line warning to the log on startup. `papplSystemCreatePrinters` isn't in the library; persisted printers reload normally, but a *newly* plugged USB device needs to be added once via the web UI (`http://localhost:8631/`) or `lpadmin`. After that it's persisted and works on every subsequent run. |
-| `< 1.0` | ❌ | — | — | pkg-config fails the build with a clear version error. |
-
-Distro PAPPL versions (as of writing) — pick your install path:
-
-- **PAPPL 1.4 (full auto-add):** Ubuntu 25.10+, Fedora 40+, Arch (current).
-- **PAPPL 1.3 (manual one-time add):** Debian 12/13/sid, Ubuntu 24.04 LTS, Linux Mint 22.x.
-- **PAPPL 1.0 (manual one-time add):** Debian 11 (oldoldstable), Ubuntu 22.04 LTS, Linux Mint 21.x.
-- **No system PAPPL (RHEL / Alma / Rocky):** build PAPPL yourself, or use `build-deb.sh` which ships PAPPL 1.4.9 alongside the app.
-
-On a distro with only PAPPL 1.3, you'll still get correct printing and the same protocol behaviour as PAPPL 1.4 — the only user-visible difference is that the first time a *new* USB device is plugged in, you have to add it manually once. BT discovery uses BlueZ D-Bus and isn't affected.
+CUPS driverless printing: see [docs/CUPS_ACCEPTANCE.md](docs/CUPS_ACCEPTANCE.md).
 
 ## Building and Installing
 
@@ -101,32 +85,41 @@ cargo test --workspace
 ```
 
 End-to-end printing against a real printer is exercised manually via
-`supvan-cli` (see below) or through CUPS; there is no automated IPP job
-test in CI by default.
+`supvan-cli` (see below) or through CUPS ([acceptance checklist](docs/CUPS_ACCEPTANCE.md)).
+IPP golden request fixtures: `tests/fixtures/ipp/` (see `scripts/capture_ipp_golden.sh`).
 
 ## Usage
 
 ### Printer Application
 
-The printer application runs an IPP server with a web interface on port 8631.
+The printer application runs an IPP server with a simple index page on port **8631**.
 It auto-discovers printers via BlueZ D-Bus (Bluetooth) and sysfs (USB HID),
-and registers them as IPP Everywhere printers that any Linux application can
-print to. When both transports are available, USB is preferred.
+and registers them as IPP Everywhere printers (`ipp://localhost:8631/ipp/print/<name>`).
+When both transports are available, USB is preferred.
 
 ```sh
-supvan-printer-app server         # start the server
-supvan-printer-app devices        # list discovered devices
-# Web interface at http://localhost:8631/
+supvan-printer-app                # start server (default 0.0.0.0:8631)
+# Index: http://localhost:8631/
 ```
 
-Other PAPPL subcommands are available (`printers`, `status`, `submit`,
-`shutdown`, etc.). Run without arguments for help.
+**First-install step** — register the queue with CUPS:
 
-For automatic CUPS queue creation, enable `cups-browsed`:
+```sh
+lpadmin -p QUEUE -E -v ipp://localhost:8631/ipp/print/PRINTER -m everywhere
+```
+
+You only do this once per install; CUPS persists the queue across reboots.
+
+For automatic discovery (no manual `lpadmin`), enable `cups-browsed`:
 
 ```sh
 sudo systemctl enable --now cups-browsed
 ```
+
+The app advertises printers over mDNS (`_ipp._tcp.local.`) by default, and
+`cups-browsed` picks them up within ~10 s. Disable mDNS at build time with
+`--no-default-features` on `ipp-printer-app` if you don't want it (e.g. for
+USB-only embedded targets).
 
 #### Systemd User Service
 
@@ -161,6 +154,9 @@ supvan-cli test-print /dev/hidraw7 --density 4
 | `SUPVAN_DUMP_DIR` | Directory for debug image dumps |
 | `SUPVAN_MOCK` | Set to `1` to run without a real printer |
 | `XDG_STATE_HOME` | Override state file location (default: `~/.local/state`) |
+| `SUPVAN_HOST` | Bind address (default: `0.0.0.0`) |
+| `SUPVAN_PORT` | IPP HTTP port (default: `8631`) |
+| `IPP_PRINTER_APP_POLL_SECS` | Status-poll cadence in seconds (default: `30`) |
 
 ## License
 

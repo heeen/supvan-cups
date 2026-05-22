@@ -45,13 +45,12 @@ Version: $VERSION
 Section: printing
 Priority: optional
 Architecture: $ARCH
-Depends: libpappl1t64, libcups2t64, libdbus-1-3, liblzma5, libbluetooth3
+Depends: libcups2t64, libdbus-1-3, liblzma5, libbluetooth3
 Installed-Size: $INSTALLED_KB
 Maintainer: Florian <florian@localhost>
 Description: Supvan T50 Pro / Katasymbol M50 Pro thermal label printer
- PAPPL printer application providing IPP Everywhere support with DNS-SD
- auto-discovery for KDE/GNOME/macOS print dialogs. Includes a standalone
- CLI tool for diagnostics.
+ Rust IPP Everywhere printer application (port 8631) for CUPS driverless
+ printing. Auto-discovers USB HID and Bluetooth printers. Includes CLI diagnostics.
 EOF
 
 # --- DEBIAN/postinst ---
