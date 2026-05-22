@@ -9,12 +9,16 @@ path = "src/main.rs"
 
 [dependencies]
 supvan-proto = { workspace = true }
-pappl-sys = { path = "../pappl-sys" }
-pappl-rs = { workspace = true }
+ipp-printer-app = { path = "../ipp-printer-app" }
 log = { workspace = true }
 env_logger = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 dbus = "0.9"
 dbus-crossroads = "0.5"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+print_raster = "0.1"
+futures = "0.3"
+parking_lot = "0.12"
 libc = "0.2"

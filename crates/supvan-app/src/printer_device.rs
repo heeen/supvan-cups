@@ -1,5 +1,3 @@
-use std::ffi::c_void;
-use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use supvan_proto::bt_transport::BtTransport;
@@ -15,25 +13,7 @@ pub struct KsDevice {
     pub printer: Option<Printer>,
     /// Guards status queries during active raster transfer.
     pub printing: AtomicBool,
-    /// BT address for battery provider (e.g. "AA:BB:CC:DD:EE:FF"), or hidraw path.
-    pub addr: Option<String>,
-    /// Cached raw fd for PAPPL read/write callbacks.
-    transport_fd: Option<RawFd>,
-    /// true = socket I/O (recv/send), false = file I/O (read/write).
-    use_socket_io: bool,
 }
-
-/// Material/label info returned by the printer.
-pub struct KsMaterial {
-    pub width_mm: u8,
-    pub height_mm: u8,
-    pub remaining: i32,
-}
-
-// Typed PAPPL state-reason flags now live in `pappl_rs::PrinterReason`;
-// see `KsDevice::status` for the typed wrapper. The raw integers exposed
-// to the device-scheme `*_status_cb` are converted via `.into()` at the
-// callback boundary.
 
 impl KsDevice {
     /// Open a Bluetooth RFCOMM connection to the printer at `addr`.
@@ -45,9 +25,6 @@ impl KsDevice {
             return Some(Box::new(KsDevice {
                 printer: None,
                 printing: AtomicBool::new(false),
-                addr: Some(addr.to_string()),
-                transport_fd: None,
-                use_socket_io: true,
             }));
         }
 
@@ -60,7 +37,6 @@ impl KsDevice {
             }
         };
 
-        let fd = sock.raw_fd();
         let transport = BtTransport::new(sock);
         let printer = Printer::new(Box::new(transport));
 
@@ -68,9 +44,6 @@ impl KsDevice {
         Some(Box::new(KsDevice {
             printer: Some(printer),
             printing: AtomicBool::new(false),
-            addr: Some(addr.to_string()),
-            transport_fd: Some(fd),
-            use_socket_io: true,
         }))
     }
 
@@ -81,9 +54,6 @@ impl KsDevice {
             return Some(Box::new(KsDevice {
                 printer: None,
                 printing: AtomicBool::new(false),
-                addr: Some(hidraw_path.to_string()),
-                transport_fd: None,
-                use_socket_io: false,
             }));
         }
 
@@ -96,7 +66,6 @@ impl KsDevice {
             }
         };
 
-        let fd = dev.raw_fd();
         let transport = UsbHidTransport::new(dev);
         let printer = Printer::new(Box::new(transport));
 
@@ -104,50 +73,15 @@ impl KsDevice {
         Some(Box::new(KsDevice {
             printer: Some(printer),
             printing: AtomicBool::new(false),
-            addr: Some(hidraw_path.to_string()),
-            transport_fd: Some(fd),
-            use_socket_io: false,
         }))
-    }
-
-    /// Read raw bytes from the underlying device. Returns bytes read, or -1 on error.
-    ///
-    /// Uses recv() for BT sockets, read() for hidraw devices.
-    /// In mock mode, returns 0 (EOF).
-    pub fn read(&self, buf: *mut u8, len: usize) -> isize {
-        let fd = match self.transport_fd {
-            Some(fd) => fd,
-            None => return 0,
-        };
-        if self.use_socket_io {
-            unsafe { libc::recv(fd, buf as *mut c_void, len, 0) }
-        } else {
-            unsafe { libc::read(fd, buf as *mut c_void, len) }
-        }
-    }
-
-    /// Write raw bytes to the underlying device. Returns bytes written, or -1 on error.
-    ///
-    /// Uses send() for BT sockets, write() for hidraw devices.
-    /// In mock mode, returns `len` (data is discarded).
-    pub fn write(&self, buf: *const u8, len: usize) -> isize {
-        let fd = match self.transport_fd {
-            Some(fd) => fd,
-            None => return len as isize,
-        };
-        if self.use_socket_io {
-            unsafe { libc::send(fd, buf as *const c_void, len, 0) }
-        } else {
-            unsafe { libc::write(fd, buf as *const c_void, len) }
-        }
     }
 
     /// Query printer status and return typed reason flags.
     ///
     /// Returns `PrinterReason::empty()` while the printing flag is set
-    /// (so PAPPL doesn't try to query a printer mid-transfer).
-    pub fn status(&self) -> pappl_rs::PrinterReason {
-        use pappl_rs::PrinterReason;
+    /// (so we don't query a printer mid-transfer).
+    pub fn status(&self) -> ipp_printer_app::PrinterReason {
+        use ipp_printer_app::PrinterReason;
 
         let printer = match &self.printer {
             Some(p) => p,
@@ -186,122 +120,16 @@ impl KsDevice {
         reasons
     }
 
-    /// Query material info. Returns Some on success.
-    ///
-    /// In mock mode, returns a dummy 40x30mm label.
-    pub fn material(&self) -> Option<KsMaterial> {
-        let printer = match &self.printer {
-            Some(p) => p,
-            None => {
-                log::debug!("KsDevice::material: mock — returning 40x30mm");
-                return Some(KsMaterial {
-                    width_mm: 40,
-                    height_mm: 30,
-                    remaining: -1,
-                });
-            }
-        };
-
-        match printer.query_material() {
-            Ok(Some(mat)) => {
-                log::debug!(
-                    "KsDevice::material: {}x{}mm, gap={}mm, remaining={}",
-                    mat.width_mm,
-                    mat.height_mm,
-                    mat.gap_mm,
-                    mat.remaining
-                        .map(|r| r.to_string())
-                        .unwrap_or_else(|| "unknown".into()),
-                );
-                Some(KsMaterial {
-                    width_mm: mat.width_mm,
-                    height_mm: mat.height_mm,
-                    remaining: mat.remaining.map(|r| r as i32).unwrap_or(-1),
-                })
-            }
-            Ok(None) => {
-                log::warn!("KsDevice::material: no response");
-                None
-            }
-            Err(e) => {
-                log::error!("KsDevice::material: {e}");
-                None
-            }
-        }
-    }
-
-    /// Query low-battery flag from printer status.
-    ///
-    /// Returns `false` in mock mode or on query failure.
-    pub fn battery_low(&self) -> bool {
-        let printer = match &self.printer {
-            Some(p) => p,
-            None => return false,
-        };
-        match printer.query_status() {
-            Ok(Some(s)) => s.low_battery,
-            _ => false,
-        }
-    }
-
     /// Check if this is a mock device (no real printer connection).
     pub fn is_mock(&self) -> bool {
         self.printer.is_none()
-    }
-
-    /// Check if the underlying socket/fd is still connected.
-    ///
-    /// Peeks one byte non-blocking for sockets, or `poll()` for file
-    /// descriptors. Returns `false` if the transport is dead (peer FIN,
-    /// ENOTCONN, POLLHUP, etc).
-    pub fn is_alive(&self) -> bool {
-        let fd = match self.transport_fd {
-            Some(fd) => fd,
-            None => return false,
-        };
-        if self.use_socket_io {
-            // recv(len=0) is useless: it returns 0 for both healthy and
-            // peer-closed sockets, so we can't tell them apart. Peek one byte:
-            //   ret > 0  → data buffered, socket alive
-            //   ret == 0 → peer sent FIN, socket dead
-            //   ret < 0  → alive iff EAGAIN/EWOULDBLOCK
-            let mut buf = [0u8; 1];
-            let ret = unsafe {
-                libc::recv(
-                    fd,
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    1,
-                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
-                )
-            };
-            if ret > 0 {
-                true
-            } else if ret == 0 {
-                false
-            } else {
-                // On Linux EAGAIN == EWOULDBLOCK; either means socket is alive but no data.
-                std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN)
-            }
-        } else {
-            let mut pfd = libc::pollfd {
-                fd,
-                events: 0,
-                revents: 0,
-            };
-            unsafe { libc::poll(&mut pfd, 1, 0) };
-            pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
-        }
     }
 }
 
 impl Drop for KsDevice {
     fn drop(&mut self) {
         if self.printer.is_some() {
-            if self.use_socket_io {
-                log::info!("KsDevice: closing BT connection");
-            } else {
-                log::info!("KsDevice: closing USB HID connection");
-            }
+            log::info!("KsDevice: closing connection");
         } else {
             log::info!("KsDevice: closing mock device");
         }

@@ -20,7 +20,6 @@ const BATTERY_PROVIDER_IFACE: &str = "org.bluez.BatteryProvider1";
 /// Commands sent to the battery provider thread.
 enum BatteryCmd {
     Add { addr: String, percentage: u8 },
-    Update { addr: String, percentage: u8 },
     Shutdown,
 }
 
@@ -43,12 +42,6 @@ impl BatteryProviderHandle {
         });
     }
 
-    pub fn update_battery(&self, addr: &str, percentage: u8) {
-        let _ = self.tx.send(BatteryCmd::Update {
-            addr: addr.to_string(),
-            percentage,
-        });
-    }
 }
 
 impl Drop for BatteryProviderHandle {
@@ -79,27 +72,6 @@ fn bt_addr_to_provider_path(addr: &str) -> Path<'static> {
 }
 
 /// Emit a PropertiesChanged signal for the Percentage property.
-fn emit_percentage_changed(conn: &SyncConnection, path: &Path<'_>, percentage: u8) {
-    use dbus::arg::Variant;
-    use dbus::blocking::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged;
-    use dbus::message::SignalArgs;
-
-    let mut changed = std::collections::HashMap::new();
-    changed.insert(
-        "Percentage".to_string(),
-        Variant(Box::new(percentage) as Box<dyn dbus::arg::RefArg>),
-    );
-
-    let signal = PropertiesPropertiesChanged {
-        interface_name: BATTERY_PROVIDER_IFACE.to_string(),
-        changed_properties: changed,
-        invalidated_properties: vec![],
-    };
-
-    let msg = signal.to_emit_message(path);
-    let _ = conn.send(msg);
-}
-
 /// Start the battery provider background thread.
 ///
 /// Returns `None` if the system D-Bus connection or BlueZ registration fails.
@@ -209,23 +181,6 @@ fn run_provider(conn: Arc<SyncConnection>, rx: mpsc::Receiver<BatteryCmd>) {
                                 bluez_path,
                             },
                         );
-                    }
-                }
-
-                Ok(BatteryCmd::Update { addr, percentage }) => {
-                    let provider_path = bt_addr_to_provider_path(&addr);
-
-                    if let Ok(mut cr) = cr.lock() {
-                        if let Some(state) = cr.data_mut::<DeviceState>(&provider_path) {
-                            if state.percentage != percentage {
-                                log::debug!(
-                                    "battery_provider: update {addr} {}% -> {percentage}%",
-                                    state.percentage
-                                );
-                                state.percentage = percentage;
-                                emit_percentage_changed(&conn, &provider_path, percentage);
-                            }
-                        }
                     }
                 }
 

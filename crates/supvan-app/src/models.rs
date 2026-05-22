@@ -16,9 +16,7 @@ use serde::Deserialize;
 /// A driver family groups models sharing the same printhead and DPI.
 pub struct DriverFamily {
     pub driver_name: CString,
-    pub description: CString,
     pub make_and_model: Vec<u8>,
-    pub device_id: CString,
     pub dpi: c_int,
     pub printhead_width_dots: u32,
     pub media_names: Vec<CString>,
@@ -105,17 +103,9 @@ pub fn load() {
             let media_sizes: Vec<[c_int; 2]> =
                 f.media_mm.iter().map(|[w, h]| [w * 100, h * 100]).collect();
 
-            let mdl = f
-                .description
-                .strip_prefix("Supvan ")
-                .unwrap_or(&f.description);
-            let device_id = format!("MFG:Supvan;MDL:{mdl};CMD:SUPVAN;");
-
             DriverFamily {
                 driver_name: CString::new(f.name.as_str()).unwrap(),
-                description: CString::new(f.description.as_str()).unwrap(),
                 make_and_model: f.description.as_bytes().to_vec(),
-                device_id: CString::new(device_id).unwrap(),
                 dpi: f.dpi,
                 printhead_width_dots: f.printhead_dots,
                 media_names,

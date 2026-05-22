@@ -2,8 +2,7 @@
 members = [
     "crates/supvan-proto",
     "crates/supvan-cli",
-    "crates/pappl-sys",
-    "crates/pappl-rs",
+    "crates/ipp-printer-app",
     "crates/supvan-app",
 ]
 resolver = "2"
@@ -15,7 +14,7 @@ license = "MIT"
 
 [workspace.dependencies]
 supvan-proto = { path = "crates/supvan-proto" }
-pappl-rs = { path = "crates/pappl-rs" }
+ipp-printer-app = { path = "crates/ipp-printer-app" }
 log = "0.4"
 env_logger = "0.11"
 thiserror = "2"
