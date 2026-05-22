@@ -33,7 +33,7 @@ impl PrinterReason {
     /// IPP keyword tokens for this flag set (CUPS / PWG).
     pub fn ipp_keywords(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
-        if self.is_empty() || self.contains(Self::NONE) {
+        if self.is_empty() {
             out.push("none");
             return out;
         }
@@ -65,5 +65,29 @@ impl PrinterReason {
             out.push("none");
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_set_is_none() {
+        assert_eq!(PrinterReason::empty().ipp_keywords(), vec!["none"]);
+    }
+
+    #[test]
+    fn single_flag_surfaces() {
+        assert_eq!(PrinterReason::COVER_OPEN.ipp_keywords(), vec!["cover-open"]);
+    }
+
+    #[test]
+    fn multi_flag_surfaces_all() {
+        let r = PrinterReason::COVER_OPEN | PrinterReason::MEDIA_EMPTY;
+        let kws = r.ipp_keywords();
+        assert!(kws.contains(&"cover-open"));
+        assert!(kws.contains(&"media-empty"));
+        assert!(!kws.contains(&"none"));
     }
 }
