@@ -1,4 +1,4 @@
-//! Device open helpers for `btrfcomm://` and `usbhid://` URIs.
+//! Device open helpers for `btrfcomm://`, `usbhid://`, and `mock://` URIs.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -40,4 +40,10 @@ pub fn open_usb(uri: &str) -> Option<KsDevice> {
     let hidraw_path = usb_discover::find_device_by_id(id)?;
     log::info!("open_usb: {id} -> {hidraw_path}");
     KsDevice::open_usb(&hidraw_path).map(|b| *b)
+}
+
+/// Open `mock://ID`. Always succeeds with a no-connection KsDevice driven by
+/// the [`crate::mock`] controller. Only registered when `SUPVAN_MOCK=1`.
+pub fn open_mock(_uri: &str) -> Option<KsDevice> {
+    Some(KsDevice::open_mock())
 }

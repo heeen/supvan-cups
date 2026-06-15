@@ -143,6 +143,8 @@ fn open_device(uri: &str) -> Option<KsDevice> {
         crate::device::open_bt(uri).map(|b| *b)
     } else if uri.starts_with("usbhid://") {
         crate::device::open_usb(uri)
+    } else if uri.starts_with("mock://") {
+        crate::device::open_mock(uri)
     } else {
         None
     }

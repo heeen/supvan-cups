@@ -47,6 +47,15 @@ impl KsDevice {
         }))
     }
 
+    /// Construct a mock device — no transport, status driven by [`crate::mock`].
+    pub fn open_mock() -> Self {
+        log::info!("KsDevice::open_mock: synthetic mock device");
+        KsDevice {
+            printer: None,
+            printing: AtomicBool::new(false),
+        }
+    }
+
     /// Open a USB HID connection to the printer at `hidraw_path` (e.g. "/dev/hidraw7").
     pub fn open_usb(hidraw_path: &str) -> Option<Box<Self>> {
         if is_mock_mode() {

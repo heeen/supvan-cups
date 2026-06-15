@@ -15,6 +15,15 @@ pub struct SupvanDeviceBackend;
 
 impl DeviceBackend for SupvanDeviceBackend {
     fn list(&self, emit: &mut dyn FnMut(&str, &str, &str) -> bool) {
+        if crate::util::is_mock_mode() {
+            let family = models::default_family();
+            let driver = family.driver_name.to_string_lossy();
+            let mdl = String::from_utf8_lossy(&family.make_and_model).into_owned();
+            let device_id = format!("MFG:Supvan;MDL:{mdl};CMD:KASCRIPT;");
+            emit("Supvan Mock", "mock://t50-001", &device_id);
+            log::info!("mock discovery: emitted mock://t50-001 (driver={driver})");
+            return;
+        }
         let usb_available = crate::usb_discover::has_device();
         crate::usb_discover::discover(&mut *emit);
         if !usb_available {
@@ -29,6 +38,8 @@ impl DeviceBackend for SupvanDeviceBackend {
             crate::device::open_bt(&config.device_uri).map(|b| *b)
         } else if config.device_uri.starts_with("usbhid://") {
             crate::device::open_usb(&config.device_uri)
+        } else if config.device_uri.starts_with("mock://") {
+            crate::device::open_mock(&config.device_uri)
         } else {
             None
         }?;
@@ -42,15 +53,10 @@ impl DeviceBackend for SupvanDeviceBackend {
                 return Some(family.driver_name.to_string_lossy().into_owned());
             }
         }
-        if device_uri.starts_with("usbhid://") {
-            return Some(
-                models::default_family()
-                    .driver_name
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-        if device_uri.starts_with("btrfcomm://") {
+        if device_uri.starts_with("usbhid://")
+            || device_uri.starts_with("btrfcomm://")
+            || device_uri.starts_with("mock://")
+        {
             return Some(
                 models::default_family()
                     .driver_name
