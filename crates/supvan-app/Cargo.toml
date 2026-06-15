@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 supvan-proto = { workspace = true }
-ipp-printer-app = { path = "../ipp-printer-app" }
+ipp-printer-app = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 serde = { version = "1", features = ["derive"] }

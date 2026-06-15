@@ -111,8 +111,8 @@ async fn run_cups_raster_job_async(
         let state = job.as_mut().unwrap();
         RasterDriver::start_page(state, &options, page_num, &dev)?;
 
-        let bpl = options.bytes_per_line() as usize;
-        let height = options.height() as usize;
+        let bpl = options.bytes_per_line as usize;
+        let height = options.height as usize;
         let mut line = vec![0u8; bpl];
         let content = page.content_mut();
         for y in 0..height {

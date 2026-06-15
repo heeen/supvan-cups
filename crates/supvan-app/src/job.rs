@@ -13,7 +13,6 @@ use crate::device;
 use crate::dither::dither_line;
 use crate::dump::{dumps_enabled, JobDump, JobManifest, PgmAccumulator};
 use crate::mock;
-use crate::models;
 use crate::printer_device::KsDevice;
 
 /// Minimal RFC-3339-ish timestamp without pulling chrono.
@@ -49,12 +48,6 @@ pub fn failure_from_proto(e: ProtoError, context: &str) -> JobFailure {
         _ => PrinterReason::OTHER,
     };
     JobFailure::new(reasons, format!("{context}: {e}"))
-}
-
-fn get_family(driver_name: &str) -> Option<&'static models::DriverFamily> {
-    use std::ffi::CString;
-    let name = CString::new(driver_name).ok()?;
-    models::family_by_driver_name(name.as_c_str())
 }
 
 pub struct KsJob {
@@ -230,12 +223,12 @@ impl RasterDriver for KsJob {
     ) -> Result<Self, JobFailure> {
         device::bt_touch_print_time();
 
-        let w = options.width();
-        let h = options.height();
-        let bpl = if options.bits_per_pixel() == 8 {
+        let w = options.width;
+        let h = options.height;
+        let bpl = if options.bits_per_pixel == 8 {
             w.div_ceil(8)
         } else {
-            options.bytes_per_line()
+            options.bytes_per_line
         };
 
         let darkness = printer.darkness();
@@ -243,7 +236,7 @@ impl RasterDriver for KsJob {
         let printhead_width_dots = printer.printhead_width_dots();
 
         let mut ks = KsJob::start(dev, w, h, bpl, density, printhead_width_dots)?;
-        if options.bits_per_pixel() == 8 && dumps_enabled() {
+        if options.bits_per_pixel == 8 && dumps_enabled() {
             ks.pgm_acc = Some(PgmAccumulator::new(w, h));
         }
         Ok(ks)
@@ -255,8 +248,8 @@ impl RasterDriver for KsJob {
         y: u32,
         line: &[u8],
     ) -> Result<(), JobFailure> {
-        if options.bits_per_pixel() == 8 {
-            let width = options.width();
+        if options.bits_per_pixel == 8 {
+            let width = options.width;
             let input = &line[..(width as usize).min(line.len())];
             if let Some(ref mut acc) = self.pgm_acc {
                 acc.push_line(y, input);
@@ -281,7 +274,7 @@ impl RasterDriver for KsJob {
         _page: u32,
         dev: &Self::Device,
     ) -> Result<(), JobFailure> {
-        let copies = options.copies();
+        let copies = options.copies;
         for copy in 0..copies {
             if copies > 1 {
                 log::info!("end_page: copy {}/{copies}", copy + 1);
@@ -294,11 +287,5 @@ impl RasterDriver for KsJob {
 
     fn end_job(self, dev: &Self::Device) {
         self.end(dev);
-    }
-
-    fn printer_status(printer: &PrinterHandle<'_>) -> bool {
-        let _family = get_family(printer.driver_name()).unwrap_or(models::default_family());
-        // Dynamic media/supply IPP attributes can be added in a later pass.
-        true
     }
 }

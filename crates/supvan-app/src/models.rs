@@ -4,7 +4,7 @@
 //! accessing any other function in this module.
 
 use std::collections::HashMap;
-use std::ffi::{c_int, CStr, CString};
+use std::ffi::{c_int, CString};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -205,14 +205,6 @@ pub fn families() -> &'static [DriverFamily] {
 /// The default driver family (supvan_t50).
 pub fn default_family() -> &'static DriverFamily {
     &registry().families[registry().default_family_idx]
-}
-
-/// Find a driver family by its driver name (e.g. `c"supvan_t50"`).
-pub fn family_by_driver_name(name: &CStr) -> Option<&'static DriverFamily> {
-    registry()
-        .families
-        .iter()
-        .find(|f| f.driver_name.as_c_str() == name)
 }
 
 /// Find a USB model by its PID string (lowercase hex, e.g. `"2073"`).
