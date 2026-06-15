@@ -1,0 +1,28 @@
+# ipptool Print-Job test against a supvan-printer-app mock printer.
+#
+# Usage: ipptool -v ipp://127.0.0.1:8631/ipp/print/supvan-mock print-job.test
+#
+# Sends a tiny synthetic PWG raster (240x160 px monochrome) and expects the
+# server to accept the job and return job-state >= pending.
+
+{
+    NAME "Print one page of PWG raster"
+    OPERATION Print-Job
+
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR name requesting-user-name ipp-test
+    ATTR name job-name ci-smoke
+    ATTR mimeMediaType document-format image/pwg-raster
+
+    GROUP job-attributes-tag
+    ATTR integer copies 1
+
+    FILE pwg-page.bin
+
+    STATUS successful-ok
+    EXPECT job-id OF-TYPE integer COUNT 1
+    EXPECT job-state OF-TYPE enum WITH-VALUE >=3
+}
