@@ -135,6 +135,22 @@ step "Print-Job round-trip via ipptool"
 cp "$TEST_SCRIPT_DIR/print-job.test" /tmp/print-job.test
 ipptool -tv "${PRINTER_URI}" /tmp/print-job.test
 
+step "lpadmin -m everywhere should now succeed (0.2 IPP attrs)"
+if lpadmin -p everywhere-ci -E -v "$PRINTER_URI" -m everywhere 2>&1; then
+    echo "lpadmin -m everywhere: PPD generated"
+    lpstat -p everywhere-ci
+else
+    echo "FAIL: lpadmin -m everywhere still rejects the IPP attribute set" >&2
+    exit 1
+fi
+
+step "lp print job via the CUPS queue"
+lpadmin -d everywhere-ci
+echo "ci smoke print" > /tmp/lp-input.txt
+lp -d everywhere-ci /tmp/lp-input.txt
+sleep 3
+lpstat -W completed -o everywhere-ci || true
+
 step "Wait for mock backend to dump the page"
 dumped=0
 for _ in $(seq 1 20); do
