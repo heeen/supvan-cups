@@ -35,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libdbus-1-3 \
         ca-certificates \
         curl \
+        ghostscript \
         procps \
         netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
@@ -44,6 +45,7 @@ COPY data/models.toml /usr/local/share/supvan-printer-app/models.toml
 
 COPY ci/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY ci/run-integration-test.sh /usr/local/bin/run-integration-test.sh
+COPY ci/print-job.test /usr/local/bin/print-job.test
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/run-integration-test.sh
 
 # CUPS in a Linux container often lacks IPv6 ::1; force IPv4-only listen.
