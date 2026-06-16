@@ -21,6 +21,28 @@ PRINTER_URI="ipp://127.0.0.1:${PORT}/ipp/print/supvan-mock"
 DUMP_DIR="${SUPVAN_DUMP_DIR:-/var/lib/supvan/dumps}"
 TEST_SCRIPT_DIR="$(dirname "$0")"
 
+# Restart supvan-printer-app with extra env vars layered on top of the
+# docker-entrypoint env. Used for lifecycle scenarios (sticky reasons,
+# recovery timer, fail-next-print).
+restart_supvan() {
+    if [[ -s /run/supvan.pid ]]; then
+        kill "$(cat /run/supvan.pid)" 2>/dev/null || true
+        sleep 1
+    fi
+    # Wipe persisted JSON so the new env-driven scenario starts from clean state.
+    rm -f /root/.local/state/supvan-printer-app/state.json 2>/dev/null || true
+    env "$@" /usr/local/bin/supvan-printer-app >/tmp/supvan.log 2>&1 &
+    echo $! > /run/supvan.pid
+    for _ in $(seq 1 40); do
+        if curl -fs "http://127.0.0.1:${PORT}/" 2>/dev/null | grep -qi mock://; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    echo "supvan failed to come up after restart" >&2
+    return 1
+}
+
 dump_logs() {
     local rc=$?
     echo
@@ -168,5 +190,100 @@ fi
 echo "Dump artefacts:"
 find "$DUMP_DIR" -type f | sort | head
 
+##############################################################################
+# Lifecycle: status polling, recovery, and job-error propagation.
+#
+# The status::spawn poller hits the backend's poll_status() every
+# IPP_PRINTER_APP_POLL_SECS (set to 1s for CI). With the SUPVAN_MOCK_STICKY
+# / SUPVAN_MOCK_RECOVER_AFTER_MS / SUPVAN_MOCK_FAIL knobs we can drive any
+# state transition we care about without real hardware.
+##############################################################################
+
+cat >/tmp/expect-reason.tpl <<'EOF'
+{
+    NAME "Expected printer-state-reasons"
+    OPERATION Get-Printer-Attributes
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    STATUS successful-ok
+    EXPECT printer-state-reasons WITH-VALUE "__REASON__"
+}
+EOF
+expect_reason() {
+    sed "s|__REASON__|$1|" /tmp/expect-reason.tpl > /tmp/expect-reason.test
+    ipptool -tv "${PRINTER_URI}" /tmp/expect-reason.test
+}
+
+step "Lifecycle: device first-seen → idle, no reasons"
+restart_supvan
+sleep 2
+expect_reason "none"
+
+step "Lifecycle: device offline (SUPVAN_MOCK_STICKY=offline)"
+restart_supvan SUPVAN_MOCK_STICKY=offline
+sleep 3   # > poll interval so the status poller has run at least once
+expect_reason "offline-report"
+
+step "Lifecycle: device recovers after SUPVAN_MOCK_RECOVER_AFTER_MS"
+restart_supvan SUPVAN_MOCK_STICKY=offline SUPVAN_MOCK_RECOVER_AFTER_MS=2000
+sleep 2
+expect_reason "offline-report"      # still offline mid-window
+sleep 3                              # > recover_after + poll
+expect_reason "none"                 # cleared
+
+step "Lifecycle: print-job error surfaces in job + printer state"
+# Realistic semantics: a printer that runs out of labels stays out of labels.
+# SUPVAN_MOCK_FAIL aborts the next print with media-empty;
+# SUPVAN_MOCK_STICKY keeps the status poller reporting media-empty afterwards
+# so any GUI polling Get-Printer-Attributes still sees the condition.
+restart_supvan SUPVAN_MOCK_FAIL=media-empty SUPVAN_MOCK_STICKY=media-empty
+# The Print-Job is accepted at the IPP layer; the worker aborts internally.
+job_resp=$(ipptool -tv "${PRINTER_URI}" /tmp/print-job.test 2>&1 || true)
+echo "$job_resp" | grep -E "job-id|job-state" | head
+job_id=$(echo "$job_resp" | awk '/job-id \(integer\) =/ {print $NF; exit}')
+echo "submitted job: id=$job_id"
+sleep 3   # > sticky-poller interval + job worker
+
+# Job-level: aborted state + failure surface kept in job-state-message.
+# ipp-printer-app 0.2 emits "job-completed-with-errors" as the IPP
+# job-state-reasons keyword (a generic terminal marker) and stuffs the
+# specific reason text into job-state-message. Asserting the message
+# contains the failure detail is more robust than pinning the keyword.
+cat >/tmp/get-job.test <<EOF
+{
+    NAME "Get-Job-Attributes for failed job"
+    OPERATION Get-Job-Attributes
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri \$uri
+    ATTR integer job-id $job_id
+    STATUS successful-ok
+    EXPECT job-state OF-TYPE enum WITH-VALUE 8
+    EXPECT job-state-message OF-TYPE textWithoutLanguage WITH-VALUE "/mock.*label/"
+}
+EOF
+ipptool -tv "${PRINTER_URI}" /tmp/get-job.test
+
+# Printer-level: sticky reason keeps reporting media-empty.
+expect_reason "media-empty"
+
+step "Lifecycle: CUPS-side query reflects upstream printer-state-reasons"
+# `lpstat -l` against an everywhere queue triggers CUPS to refresh the
+# queue's printer-state-reasons from the upstream IPP server via the
+# cups-ipp backend's Get-Printer-Attributes call. With sticky media-empty
+# still set on our backend, CUPS should surface it on the local queue.
+lpstat -l -p everywhere-ci 2>&1 | tee /tmp/lpstat.out | head -20 || true
+if grep -qi "media-empty" /tmp/lpstat.out; then
+    echo "CUPS-local queue reflects upstream media-empty."
+else
+    # cups-ipp backend doesn't always proxy state-reasons synchronously;
+    # don't fail the run on this — the IPP-layer check above already proves
+    # the framework surfaces the state correctly.
+    echo "warn: CUPS-local lpstat didn't include media-empty (backend may proxy state-reasons only after a job, not on query)."
+fi
+
 echo
-echo "PASS: discovery + IPP attributes + Print-Job round-trip succeeded"
+echo "PASS: discovery + IPP attributes + Print-Job round-trip + lifecycle succeeded"

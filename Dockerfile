@@ -55,6 +55,7 @@ RUN sed -i 's|^Listen localhost:631|Listen 127.0.0.1:631|' /etc/cups/cupsd.conf 
 ENV SUPVAN_MOCK=1 \
     SUPVAN_MODELS=/usr/local/share/supvan-printer-app/models.toml \
     SUPVAN_DUMP_DIR=/var/lib/supvan/dumps \
+    IPP_PRINTER_APP_POLL_SECS=1 \
     RUST_LOG=info \
     IPP_PORT=8631
 

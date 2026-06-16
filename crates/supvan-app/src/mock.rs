@@ -13,7 +13,7 @@
 //! Tokens (parser is case-insensitive on the hyphenated form):
 //! `media-empty`, `label-not-installed`, `media-jam`, `label-rw-error`,
 //! `label-mode-error`, `ribbon-rw-error`, `ribbon-end`, `media-needed`,
-//! `cover-open`, `head-temp-high`, `other`.
+//! `cover-open`, `head-temp-high`, `other`, `offline` (alias `offline-report`).
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -162,6 +162,9 @@ fn parse_status(s: &str) -> ParsedStatus {
             "head-temp-high" | "other" => {
                 p.status.head_temp_high = true;
                 p.reasons |= PrinterReason::OTHER;
+            }
+            "offline" | "offline-report" => {
+                p.reasons |= PrinterReason::OFFLINE;
             }
             unknown => {
                 log::warn!("mock: ignoring unknown reason token '{unknown}'");
