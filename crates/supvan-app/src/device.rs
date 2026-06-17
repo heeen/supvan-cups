@@ -1,10 +1,16 @@
-//! Device open helpers for `btrfcomm://`, `usbhid://`, and `mock://` URIs.
+//! Device open helpers for `supvan://`, `mock://`, and legacy
+//! `btrfcomm://` / `usbhid://` URIs.
 //!
 //! BT connections are cached per address: opening the same address twice
 //! reuses the existing RFCOMM socket instead of redialing the printer, which
 //! would beep on every connect. Each call validates the cached socket with
 //! a CHECK_DEVICE round-trip; if that fails the entry is evicted and a fresh
 //! socket is dialed (which beeps once, as expected for "printer came back").
+//!
+//! `supvan://<name>` is the unified scheme — discovery cross-correlates USB
+//! and BT candidates by the printer's self-reported name and registers a
+//! per-name transport mapping via [`register_supvan`]. At open time
+//! [`open_supvan`] resolves the name to USB (preferred when present) or BT.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +23,6 @@ use supvan_proto::rfcomm::RfcommSocket;
 
 use crate::battery_provider;
 use crate::printer_device::KsDevice;
-use crate::usb_discover;
 
 static LAST_PRINT_TIME: AtomicU64 = AtomicU64::new(0);
 
@@ -100,16 +105,56 @@ pub fn open_bt(uri: &str) -> Option<Box<KsDevice>> {
     Some(Box::new(KsDevice::from_shared(printer)))
 }
 
-/// Open `usbhid://SERIAL` or `usbhid://bus-N-path`.
-pub fn open_usb(uri: &str) -> Option<KsDevice> {
-    let id = uri.strip_prefix("usbhid://")?;
-    let hidraw_path = usb_discover::find_device_by_id(id)?;
-    log::info!("open_usb: {id} -> {hidraw_path}");
-    KsDevice::open_usb(&hidraw_path).map(|b| *b)
-}
-
 /// Open `mock://ID`. Always succeeds with a no-connection KsDevice driven by
 /// the [`crate::mock`] controller. Only registered when `SUPVAN_MOCK=1`.
 pub fn open_mock(_uri: &str) -> Option<KsDevice> {
     Some(KsDevice::open_mock())
+}
+
+/// Transport map for `supvan://NAME` URIs, populated by discovery and
+/// consulted by [`open_supvan`] / [`poll_status`].
+#[derive(Clone, Default)]
+struct SupvanTransports {
+    hidraw_path: Option<String>,
+    bt_address: Option<String>,
+}
+
+fn supvan_map() -> &'static Mutex<HashMap<String, SupvanTransports>> {
+    static MAP: OnceLock<Mutex<HashMap<String, SupvanTransports>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record the active USB and/or BT transports for a `supvan://<slug>` printer.
+/// Called from [`crate::ipp_server::SupvanDeviceBackend::list`] after each
+/// discovery cycle.
+pub fn register_supvan(slug: &str, hidraw_path: Option<String>, bt_address: Option<String>) {
+    supvan_map().lock().unwrap().insert(
+        slug.to_string(),
+        SupvanTransports {
+            hidraw_path,
+            bt_address,
+        },
+    );
+}
+
+/// Open `supvan://<slug>`. Prefers USB when available, falls back to the
+/// cached BT socket. Returns `None` if neither transport is registered or
+/// both fail to open.
+pub fn open_supvan(uri: &str) -> Option<KsDevice> {
+    let slug = uri.strip_prefix("supvan://")?;
+    let entry = supvan_map().lock().unwrap().get(slug).cloned()?;
+
+    if let Some(path) = entry.hidraw_path.as_deref() {
+        if let Some(dev) = KsDevice::open_usb(path) {
+            return Some(*dev);
+        }
+        log::warn!("open_supvan: USB open failed for {slug} ({path}), falling back to BT");
+    }
+    if let Some(addr) = entry.bt_address.as_deref() {
+        // open_bt expects a full URI; synthesize one.
+        let uri = format!("btrfcomm://bt/{addr}");
+        return open_bt(&uri).map(|b| *b);
+    }
+    log::warn!("open_supvan: no transports for {slug}");
+    None
 }

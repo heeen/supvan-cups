@@ -139,10 +139,8 @@ async fn run_cups_raster_job_async(
 }
 
 fn open_device(uri: &str) -> Option<KsDevice> {
-    if uri.starts_with("btrfcomm://") {
-        crate::device::open_bt(uri).map(|b| *b)
-    } else if uri.starts_with("usbhid://") {
-        crate::device::open_usb(uri)
+    if uri.starts_with("supvan://") {
+        crate::device::open_supvan(uri)
     } else if uri.starts_with("mock://") {
         crate::device::open_mock(uri)
     } else {

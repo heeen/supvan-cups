@@ -1,5 +1,6 @@
 //! Application entry: IPP server, discovery, state.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -8,10 +9,23 @@ use ipp_printer_app::{
     PrinterRegistry, Server, ServerOptions,
 };
 
+use crate::discover::BtCandidate;
 use crate::ipp_job::{config_from_family, run_cups_raster_job};
 use crate::models;
+use crate::usb_discover::UsbCandidate;
 
 pub struct SupvanDeviceBackend;
+
+/// Slugify a printer-reported name into something CUPS can use as a queue
+/// name. Lowercase ASCII alphanumerics; everything else becomes a hyphen.
+fn slug(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let s: String = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    if s.is_empty() { "printer".to_string() } else { s }
+}
 
 impl DeviceBackend for SupvanDeviceBackend {
     fn list(&self, emit: &mut dyn FnMut(&str, &str, &str) -> bool) {
@@ -24,21 +38,73 @@ impl DeviceBackend for SupvanDeviceBackend {
             log::info!("mock discovery: emitted mock://t50-001 (driver={driver})");
             return;
         }
-        let usb_available = crate::usb_discover::has_device();
-        crate::usb_discover::discover(&mut *emit);
-        if !usb_available {
-            crate::discover::discover(&mut *emit);
+
+        // Collect all candidates. USB probes RD_DEV_NAME silently per device;
+        // BT pulls the firmware-reported name straight from BlueZ.
+        let usb = crate::usb_discover::list_candidates();
+        let bt = crate::discover::list_candidates();
+
+        // Group by printer-reported name. USB devices that didn't respond
+        // to RD_DEV_NAME (the firmware's 8-byte USB status frame doesn't
+        // carry one — see supvan_proto::usb_transport) get a fallback
+        // group keyed by their uri_id.
+        //
+        // Heuristic merge: USB has no way to surface the printer's serial,
+        // so when *exactly* one USB candidate and one BT candidate are
+        // present we treat them as the same physical printer and use the
+        // BT-reported name (always present, always unique) as the key.
+        // Households with multiple Supvan printers fall back to the
+        // per-transport entries.
+        type Group = (Option<UsbCandidate>, Option<BtCandidate>);
+        let mut by_name: BTreeMap<String, Group> = BTreeMap::new();
+        if usb.len() == 1 && bt.len() == 1 {
+            let u = usb.into_iter().next().unwrap();
+            let b = bt.into_iter().next().unwrap();
+            log::info!(
+                "discover: merging single USB + single BT under BT name {}",
+                b.name
+            );
+            by_name.insert(b.name.clone(), (Some(u), Some(b)));
+        } else {
+            for u in usb {
+                let key = u.printer_name.clone().unwrap_or_else(|| u.uri_id.clone());
+                by_name.entry(key).or_default().0 = Some(u);
+            }
+            for b in bt {
+                let key = b.name.clone();
+                by_name.entry(key).or_default().1 = Some(b);
+            }
+        }
+
+        for (name, (usb, bt)) in by_name {
+            let model = usb
+                .as_ref()
+                .map(|u| u.model_name.clone())
+                .or_else(|| bt.as_ref().map(|_| "T50 Series".to_string()))
+                .unwrap_or_else(|| "T50 Series".to_string());
+            let info = format!("Supvan {model} {name}");
+            let uri = format!("supvan://{}", slug(&name));
+            let device_id = format!("MFG:Supvan;MDL:{model};CMD:SUPVAN;");
+            log::info!(
+                "discover: emitting {uri} (usb={}, bt={})",
+                usb.is_some(),
+                bt.is_some(),
+            );
+            // Register the name → transport mapping so open_supvan can resolve it.
+            crate::device::register_supvan(
+                &slug(&name),
+                usb.as_ref().map(|u| u.hidraw_path.clone()),
+                bt.as_ref().map(|b| b.address.clone()),
+            );
+            if !emit(&info, &uri, &device_id) {
+                break;
+            }
         }
     }
 
     fn poll_status(&self, config: &PrinterConfig) -> Option<PrinterReason> {
-        // BT now goes through the cache (see device.rs); the cached socket is
-        // probed with a single CHECK_DEVICE frame, which does NOT beep — only
-        // a fresh CONNECT does.
-        let dev = if config.device_uri.starts_with("btrfcomm://") {
-            crate::device::open_bt(&config.device_uri).map(|b| *b)
-        } else if config.device_uri.starts_with("usbhid://") {
-            crate::device::open_usb(&config.device_uri)
+        let dev = if config.device_uri.starts_with("supvan://") {
+            crate::device::open_supvan(&config.device_uri)
         } else if config.device_uri.starts_with("mock://") {
             crate::device::open_mock(&config.device_uri)
         } else {
@@ -54,10 +120,7 @@ impl DeviceBackend for SupvanDeviceBackend {
                 return Some(family.driver_name.to_string_lossy().into_owned());
             }
         }
-        if device_uri.starts_with("usbhid://")
-            || device_uri.starts_with("btrfcomm://")
-            || device_uri.starts_with("mock://")
-        {
+        if device_uri.starts_with("supvan://") || device_uri.starts_with("mock://") {
             return Some(
                 models::default_family()
                     .driver_name
@@ -83,7 +146,7 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         config_from_family,
     );
 
-    prune_stale_usb(&registry);
+    prune_stale_supvan(&registry);
     Server::persist(&registry, &state_path);
 
     let registry_print = registry.clone();
@@ -123,15 +186,18 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
     .await
 }
 
-fn prune_stale_usb(registry: &PrinterRegistry) {
+/// Drop persisted entries whose URI scheme this build no longer recognises
+/// (e.g. legacy `usbhid://` / `btrfcomm://` from before the supvan:// unification).
+/// Live `supvan://` entries are kept; the next discovery cycle re-registers
+/// the transport mapping.
+fn prune_stale_supvan(registry: &PrinterRegistry) {
     let mut guard = registry.write();
     guard.retain(|p| {
-        if let Some(id) = p.config.device_uri.strip_prefix("usbhid://") {
-            if crate::usb_discover::find_device_by_id(id).is_none() {
-                log::info!("pruning stale USB printer: {}", p.config.device_uri);
-                return false;
-            }
+        let uri = &p.config.device_uri;
+        let keep = uri.starts_with("supvan://") || uri.starts_with("mock://");
+        if !keep {
+            log::info!("pruning legacy-scheme printer: {uri}");
         }
-        true
+        keep
     });
 }

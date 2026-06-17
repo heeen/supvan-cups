@@ -256,3 +256,38 @@ where
     log::info!("discover: done");
     true
 }
+
+/// One BT-attached Supvan candidate.
+///
+/// `name` is the BlueZ device `Name` property — the same string the firmware
+/// reports as its self-id, so it cross-correlates with USB's `RD_DEV_NAME`.
+pub struct BtCandidate {
+    pub address: String,
+    pub name: String,
+}
+
+/// Like [`discover`] but returns structured candidates instead of invoking a
+/// callback. Used by the unified cross-transport list in
+/// [`crate::ipp_server::SupvanDeviceBackend::list`].
+pub fn list_candidates() -> Vec<BtCandidate> {
+    let mut out = Vec::new();
+    discover(|info, uri, _id| {
+        // info is "Supvan <name> BT", uri is "btrfcomm://bt/<addr>"
+        let name = info
+            .strip_prefix("Supvan ")
+            .and_then(|s| s.strip_suffix(" BT"))
+            .unwrap_or(info)
+            .to_string();
+        if let Some(addr) = uri
+            .strip_prefix("btrfcomm://")
+            .and_then(|s| s.find('/').map(|i| &s[i + 1..]))
+        {
+            out.push(BtCandidate {
+                address: addr.to_string(),
+                name,
+            });
+        }
+        true
+    });
+    out
+}
