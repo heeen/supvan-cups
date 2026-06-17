@@ -32,11 +32,12 @@ impl DeviceBackend for SupvanDeviceBackend {
     }
 
     fn poll_status(&self, config: &PrinterConfig) -> Option<PrinterReason> {
-        // BT printers beep on every connect — polling status this way would
-        // make the printer beep on every poll cycle. Skip BT entirely and
-        // rely on print-time error surfacing for those. USB and mock are
-        // silent, so we still poll them for live state.
-        let dev = if config.device_uri.starts_with("usbhid://") {
+        // BT now goes through the cache (see device.rs); the cached socket is
+        // probed with a single CHECK_DEVICE frame, which does NOT beep — only
+        // a fresh CONNECT does.
+        let dev = if config.device_uri.starts_with("btrfcomm://") {
+            crate::device::open_bt(&config.device_uri).map(|b| *b)
+        } else if config.device_uri.starts_with("usbhid://") {
             crate::device::open_usb(&config.device_uri)
         } else if config.device_uri.starts_with("mock://") {
             crate::device::open_mock(&config.device_uri)

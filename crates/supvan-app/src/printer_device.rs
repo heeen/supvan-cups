@@ -1,50 +1,58 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use supvan_proto::bt_transport::BtTransport;
+use supvan_proto::error::{Error as ProtoError, Result as ProtoResult};
 use supvan_proto::hidraw::HidrawDevice;
 use supvan_proto::printer::Printer;
-use supvan_proto::rfcomm::RfcommSocket;
+use supvan_proto::status::PrinterStatus;
 use supvan_proto::usb_transport::UsbHidTransport;
 
 use crate::util::is_mock_mode;
 
+/// A Printer that may be owned by this `KsDevice` (USB, fresh BT) or shared
+/// behind a `Mutex` so multiple short-lived `KsDevice` instances can reuse a
+/// single open RFCOMM socket without reconnecting (which makes the BT
+/// firmware beep).
+pub enum PrinterHandle {
+    /// `KsDevice` is the only owner; transport closes when dropped.
+    Owned(Printer),
+    /// Shared with [`crate::device`]'s cache. Drop is a no-op for the
+    /// connection.
+    Shared(Arc<Mutex<Printer>>),
+}
+
+impl PrinterHandle {
+    /// Query INQUIRY_STA, returning a parsed [`PrinterStatus`].
+    pub fn query_status(&self) -> ProtoResult<Option<PrinterStatus>> {
+        match self {
+            Self::Owned(p) => p.query_status(),
+            Self::Shared(arc) => arc.lock().unwrap().query_status(),
+        }
+    }
+
+    /// Stream the compressed raster + speed to the device.
+    pub fn print_compressed(&self, compressed: &[u8], speed: u16) -> ProtoResult<()> {
+        match self {
+            Self::Owned(p) => p.print_compressed(compressed, speed),
+            Self::Shared(arc) => arc.lock().unwrap().print_compressed(compressed, speed),
+        }
+    }
+}
+
 /// Opaque device handle wrapping a connected Printer (or None in mock mode).
 pub struct KsDevice {
-    pub printer: Option<Printer>,
+    pub printer: Option<PrinterHandle>,
     /// Guards status queries during active raster transfer.
     pub printing: AtomicBool,
 }
 
 impl KsDevice {
-    /// Open a Bluetooth RFCOMM connection to the printer at `addr`.
-    ///
-    /// If `SUPVAN_MOCK=1`, returns a mock device with no connection.
-    pub fn open(addr: &str) -> Option<Box<Self>> {
-        if is_mock_mode() {
-            log::info!("KsDevice::open: MOCK mode — skipping BT connect to {addr}");
-            return Some(Box::new(KsDevice {
-                printer: None,
-                printing: AtomicBool::new(false),
-            }));
-        }
-
-        log::info!("KsDevice::open: connecting to {addr}");
-        let sock = match RfcommSocket::connect_default(addr) {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("KsDevice::open: RFCOMM connect failed: {e}");
-                return None;
-            }
-        };
-
-        let transport = BtTransport::new(sock);
-        let printer = Printer::new(Box::new(transport));
-
-        log::debug!("KsDevice::open: connected to {addr}");
-        Some(Box::new(KsDevice {
-            printer: Some(printer),
+    /// Wrap a printer that lives in the BT cache.
+    pub fn from_shared(printer: Arc<Mutex<Printer>>) -> Self {
+        KsDevice {
+            printer: Some(PrinterHandle::Shared(printer)),
             printing: AtomicBool::new(false),
-        }))
+        }
     }
 
     /// Construct a mock device — no transport, status driven by [`crate::mock`].
@@ -80,7 +88,7 @@ impl KsDevice {
 
         log::debug!("KsDevice::open_usb: opened {hidraw_path}");
         Some(Box::new(KsDevice {
-            printer: Some(printer),
+            printer: Some(PrinterHandle::Owned(printer)),
             printing: AtomicBool::new(false),
         }))
     }
@@ -104,6 +112,13 @@ impl KsDevice {
         let status = match printer.query_status() {
             Ok(Some(s)) => s,
             Ok(None) => return PrinterReason::OTHER,
+            Err(ProtoError::Io(_)) => {
+                // Socket likely dropped under us; let the next open_bt
+                // detect it and reconnect rather than reporting OFFLINE
+                // on a transient blip.
+                log::warn!("KsDevice::status: transport I/O error; will refresh on next open");
+                return PrinterReason::empty();
+            }
             Err(e) => {
                 log::warn!("KsDevice::status: query failed: {e}");
                 return PrinterReason::OTHER;
@@ -137,10 +152,10 @@ impl KsDevice {
 
 impl Drop for KsDevice {
     fn drop(&mut self) {
-        if self.printer.is_some() {
-            log::info!("KsDevice: closing connection");
-        } else {
-            log::info!("KsDevice: closing mock device");
+        // Owned connections close their socket here; shared cache entries
+        // persist for the next caller, so we don't even log on drop.
+        if let Some(PrinterHandle::Owned(_)) = &self.printer {
+            log::debug!("KsDevice: closing owned connection");
         }
     }
 }
