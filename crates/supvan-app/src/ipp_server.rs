@@ -32,16 +32,16 @@ impl DeviceBackend for SupvanDeviceBackend {
     }
 
     fn poll_status(&self, config: &PrinterConfig) -> Option<PrinterReason> {
-        // Open the device just long enough to query status. BT reuses the cache
-        // (see device.rs); USB opens a fresh hidraw handle each poll.
-        let dev = if config.device_uri.starts_with("btrfcomm://") {
-            crate::device::open_bt(&config.device_uri).map(|b| *b)
-        } else if config.device_uri.starts_with("usbhid://") {
+        // BT printers beep on every connect — polling status this way would
+        // make the printer beep on every poll cycle. Skip BT entirely and
+        // rely on print-time error surfacing for those. USB and mock are
+        // silent, so we still poll them for live state.
+        let dev = if config.device_uri.starts_with("usbhid://") {
             crate::device::open_usb(&config.device_uri)
         } else if config.device_uri.starts_with("mock://") {
             crate::device::open_mock(&config.device_uri)
         } else {
-            None
+            return None;
         }?;
         Some(dev.status())
     }
