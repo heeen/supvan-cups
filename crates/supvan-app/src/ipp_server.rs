@@ -44,36 +44,44 @@ impl DeviceBackend for SupvanDeviceBackend {
         let usb = crate::usb_discover::list_candidates();
         let bt = crate::discover::list_candidates();
 
-        // Group by printer-reported name. USB devices that didn't respond
-        // to RD_DEV_NAME (the firmware's 8-byte USB status frame doesn't
-        // carry one — see supvan_proto::usb_transport) get a fallback
-        // group keyed by their uri_id.
+        // Group by printer-reported name. USB candidates carry their
+        // `device_sn` (parsed from `RETURN_MAT` at offset 40); BT carries
+        // it as the BlueZ `Name` property. When both match, we collapse
+        // the two transports into one logical printer.
         //
-        // Heuristic merge: USB has no way to surface the printer's serial,
-        // so when *exactly* one USB candidate and one BT candidate are
-        // present we treat them as the same physical printer and use the
-        // BT-reported name (always present, always unique) as the key.
-        // Households with multiple Supvan printers fall back to the
-        // per-transport entries.
+        // If a USB candidate failed to surface its serial (e.g. the device
+        // was busy and RETURN_MAT didn't reply), fall back to its bus URI
+        // as the group key. A final 1-USB-only + 1-BT-only sweep merges
+        // them under the BT name to keep single-printer households tidy.
         type Group = (Option<UsbCandidate>, Option<BtCandidate>);
         let mut by_name: BTreeMap<String, Group> = BTreeMap::new();
-        if usb.len() == 1 && bt.len() == 1 {
-            let u = usb.into_iter().next().unwrap();
-            let b = bt.into_iter().next().unwrap();
+        for u in usb {
+            let key = u.printer_name.clone().unwrap_or_else(|| u.uri_id.clone());
+            by_name.entry(key).or_default().0 = Some(u);
+        }
+        for b in bt {
+            let key = b.name.clone();
+            by_name.entry(key).or_default().1 = Some(b);
+        }
+
+        let usb_only: Vec<String> = by_name
+            .iter()
+            .filter(|(_, (u, b))| u.is_some() && b.is_none())
+            .map(|(k, _)| k.clone())
+            .collect();
+        let bt_only: Vec<String> = by_name
+            .iter()
+            .filter(|(_, (u, b))| u.is_none() && b.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        if usb_only.len() == 1 && bt_only.len() == 1 {
+            let usb_key = usb_only.into_iter().next().unwrap();
+            let bt_key = bt_only.into_iter().next().unwrap();
             log::info!(
-                "discover: merging single USB + single BT under BT name {}",
-                b.name
+                "discover: USB probe failed; cardinality fallback merging {usb_key} + {bt_key} under {bt_key}"
             );
-            by_name.insert(b.name.clone(), (Some(u), Some(b)));
-        } else {
-            for u in usb {
-                let key = u.printer_name.clone().unwrap_or_else(|| u.uri_id.clone());
-                by_name.entry(key).or_default().0 = Some(u);
-            }
-            for b in bt {
-                let key = b.name.clone();
-                by_name.entry(key).or_default().1 = Some(b);
-            }
+            let usb_entry = by_name.remove(&usb_key).unwrap().0;
+            by_name.get_mut(&bt_key).unwrap().0 = usb_entry;
         }
 
         for (name, (usb, bt)) in by_name {

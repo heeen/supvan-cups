@@ -33,8 +33,13 @@ pub struct UsbCandidate {
     pub printer_name: Option<String>,
 }
 
-/// Open the HID just long enough to issue RD_DEV_NAME. Silent over USB.
-/// Returns `None` if the device isn't reachable or doesn't reply.
+/// Open the HID just long enough to issue RETURN_MAT and parse the embedded
+/// device serial from the 64-byte response. Silent over USB.
+///
+/// `RD_DEV_NAME` (0x16) doesn't work over USB — the 8-byte HID status frame
+/// can't carry a string — but `RETURN_MAT` (0x30) returns a 64-byte report
+/// whose offset-40 field holds the printer's serial as ASCII (matches the
+/// `Name` BlueZ exposes over BT). That's the cross-transport join key.
 fn probe_printer_name(hidraw_path: &str) -> Option<String> {
     if is_mock_mode() {
         return None;
@@ -42,9 +47,23 @@ fn probe_printer_name(hidraw_path: &str) -> Option<String> {
     let dev = HidrawDevice::open(hidraw_path).ok()?;
     let transport = UsbHidTransport::new(dev);
     let printer = Printer::new(Box::new(transport));
-    let name = printer.read_device_name().ok().flatten();
-    log::debug!("usb_discover: probed {hidraw_path} -> name={name:?}");
-    name
+    let mat = match printer.query_material() {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            log::warn!("usb_discover: {hidraw_path}: RETURN_MAT returned None");
+            return None;
+        }
+        Err(e) => {
+            log::warn!("usb_discover: {hidraw_path}: RETURN_MAT errored: {e}");
+            return None;
+        }
+    };
+    log::info!(
+        "usb_discover: probed {hidraw_path} -> device_sn={:?} remaining={:?}",
+        mat.device_sn,
+        mat.remaining,
+    );
+    mat.device_sn
 }
 
 /// Walk /sys/class/hidraw and return one [`UsbCandidate`] per Supvan device.
