@@ -218,6 +218,14 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
     prune_stale_supvan(&registry);
     Server::persist(&registry, &state_path);
 
+    // Coordinate CUPS queue creation + mDNS advertising: the registrar waits
+    // for the server to bind, ensures one direct ipp:// queue per printer,
+    // stamps each record's UUID from the queue's printer-uuid, then advertises
+    // with that UUID so a co-resident cups-browsed dedupes us instead of
+    // creating a broken implicitclass queue. mDNS is therefore advertised by
+    // the registrar, NOT by Server::run (advertise_mdns: false below).
+    crate::registrar::spawn(registry.clone(), port);
+
     let registry_print = registry.clone();
     let print_job = Arc::new(
         move |ctx: JobContext, raster: Vec<u8>, copies: u32| -> Result<(), JobFailure> {
@@ -251,6 +259,9 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         device_backend: backend,
         print_job,
         state_path,
+        // The registrar advertises after stamping queue UUIDs; don't let the
+        // framework advertise early (it would race with no UUID set).
+        advertise_mdns: false,
     })
     .await
 }
