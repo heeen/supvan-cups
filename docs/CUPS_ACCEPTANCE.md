@@ -13,24 +13,34 @@ Open http://localhost:8631/ and note the printer name and `ipp://…` URI.
 
 ## 2. Register a driverless queue
 
-Two paths depending on whether `cups-browsed` is running:
+**The app self-registers — normally there's nothing to do here.** On startup
+the in-process registrar (`crates/supvan-app/src/registrar.rs`) waits for the
+IPP server to bind, then for each discovered printer:
 
-### Auto-import via mDNS (preferred when cups-browsed is active)
+1. creates a direct queue `lpadmin -p <name> -E -v
+   ipp://localhost:8631/ipp/print/<name> -m everywhere`,
+2. reads back the CUPS-assigned `printer-uuid`,
+3. advertises mDNS (`_ipp._tcp.local.`) with `UUID=<that uuid>`.
 
-Default builds advertise each printer over mDNS (`_ipp._tcp.local.`). With
-`cups-browsed` running it picks the printer up within ~10 seconds and creates
-a CUPS queue automatically — no `lpadmin` step needed. Verify with:
+Verify:
 
 ```sh
-avahi-browse -rt _ipp._tcp     # or: dns-sd -B _ipp._tcp
-systemctl status cups-browsed
-lpstat -p                       # the supvan-… queue should appear
+lpstat -v            # one queue, device-uri ipp://localhost:8631/...
+avahi-browse -rpt _ipp._tcp | grep UUID=   # advert carries the queue uuid
 ```
 
-Disable mDNS at compile time with `--no-default-features` on `ipp-printer-app`
-if you don't want this (e.g. when running multiple servers on one host).
+### Coexistence with cups-browsed (automatic)
 
-### Manual `lpadmin` (always works)
+Because the advertised `UUID=` matches the local queue's `printer-uuid`,
+a co-resident `cups-browsed` dedupes the service and stands down (its debug
+log shows *"is from local CUPS, ignored"*) rather than building a broken
+`implicitclass://` queue that can't route to a same-host service. No
+`cups-browsed` config change or disabling is needed — it works whether
+`cups-browsed` is enabled or not. If `cups-browsed` was already running and
+races in a duplicate before its local-queue cache updates, the registrar
+sweeps it within ~20 s.
+
+### Manual `lpadmin` (fallback / other hosts)
 
 ```sh
 PRINTER=supvan-YOURID   # from the web index
@@ -39,9 +49,10 @@ sudo lpadmin -p "$PRINTER" -E \
   -m everywhere
 ```
 
-This is the recommended first-install step — it works without `cups-browsed`,
-without mDNS, and surfaces any printer-attribute errors directly. Once the
-queue exists CUPS persists it across reboots; you don't need to repeat this.
+Useful when adding the printer from a *different* machine on the LAN (the
+mDNS advert makes it discoverable there too), or to debug attribute errors
+directly. Disable mDNS at compile time with `--no-default-features` on
+`ipp-printer-app` if you don't want any advertising.
 
 ## 3. Print
 
