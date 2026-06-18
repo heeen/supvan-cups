@@ -1,7 +1,7 @@
 //! Application entry: IPP server, discovery, state.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use parking_lot::RwLock;
 use ipp_printer_app::{
@@ -13,6 +13,25 @@ use crate::discover::BtCandidate;
 use crate::ipp_job::{config_from_family, run_cups_raster_job};
 use crate::models;
 use crate::usb_discover::UsbCandidate;
+
+/// Threshold below which the printer-state-reasons gets the MEDIA_LOW flag.
+/// Conservative — most label-printer ops want a few minutes of warning.
+const MEDIA_LOW_THRESHOLD: u32 = 20;
+
+/// Per-printer last-seen RFID tag identifiers; used to log roll swaps and
+/// (in a future phase) refresh `media-col-ready`.
+#[derive(Default, Clone, PartialEq)]
+struct RollFingerprint {
+    uuid: String,
+    code: String,
+    width_mm: u8,
+    height_mm: u8,
+}
+
+fn roll_cache() -> &'static Mutex<HashMap<String, RollFingerprint>> {
+    static C: OnceLock<Mutex<HashMap<String, RollFingerprint>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub struct SupvanDeviceBackend;
 
@@ -118,7 +137,49 @@ impl DeviceBackend for SupvanDeviceBackend {
         } else {
             return None;
         }?;
-        Some(dev.status())
+
+        let mut reasons = dev.status();
+
+        // Material query: surfaces labels-remaining + roll-swap detection.
+        // Skipped on mock devices (dev.material() returns None).
+        if let Some(mat) = dev.material() {
+            let fp = RollFingerprint {
+                uuid: mat.uuid.clone(),
+                code: mat.code.clone(),
+                width_mm: mat.width_mm,
+                height_mm: mat.height_mm,
+            };
+            let mut cache = roll_cache().lock().unwrap();
+            let key = config.name.clone();
+            match cache.get(&key) {
+                Some(prev) if *prev != fp && !prev.uuid.is_empty() => {
+                    log::info!(
+                        "{}: roll swap detected — was {}x{}mm uuid={} -> now {}x{}mm uuid={}",
+                        key,
+                        prev.width_mm, prev.height_mm, prev.uuid,
+                        fp.width_mm, fp.height_mm, fp.uuid,
+                    );
+                }
+                None => {
+                    log::info!(
+                        "{}: roll registered — {}x{}mm uuid={} remaining={:?}",
+                        key, fp.width_mm, fp.height_mm, fp.uuid, mat.remaining,
+                    );
+                }
+                _ => {}
+            }
+            cache.insert(key, fp);
+
+            if let Some(remaining) = mat.remaining {
+                if remaining == 0 {
+                    reasons |= PrinterReason::MEDIA_EMPTY;
+                } else if remaining <= MEDIA_LOW_THRESHOLD {
+                    reasons |= PrinterReason::MARKER_SUPPLY_LOW;
+                }
+            }
+        }
+
+        Some(reasons)
     }
 
     fn driver_for_device(&self, device_id: &str, device_uri: &str) -> Option<String> {

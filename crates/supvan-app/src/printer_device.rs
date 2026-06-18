@@ -30,6 +30,14 @@ impl PrinterHandle {
         }
     }
 
+    /// Query RETURN_MAT (loaded label + RFID + remaining count).
+    pub fn query_material(&self) -> ProtoResult<Option<supvan_proto::status::MaterialInfo>> {
+        match self {
+            Self::Owned(p) => p.query_material(),
+            Self::Shared(arc) => arc.lock().unwrap().query_material(),
+        }
+    }
+
     /// Stream the compressed raster + speed to the device.
     pub fn print_compressed(&self, compressed: &[u8], speed: u16) -> ProtoResult<()> {
         match self {
@@ -147,6 +155,22 @@ impl KsDevice {
     /// Check if this is a mock device (no real printer connection).
     pub fn is_mock(&self) -> bool {
         self.printer.is_none()
+    }
+
+    /// Query loaded material / RFID tag info. Returns `None` if mock, mid-print,
+    /// or the transport errored.
+    pub fn material(&self) -> Option<supvan_proto::status::MaterialInfo> {
+        let printer = self.printer.as_ref()?;
+        if self.printing.load(Ordering::Acquire) {
+            return None;
+        }
+        match printer.query_material() {
+            Ok(m) => m,
+            Err(e) => {
+                log::debug!("KsDevice::material: query failed: {e}");
+                None
+            }
+        }
     }
 }
 
