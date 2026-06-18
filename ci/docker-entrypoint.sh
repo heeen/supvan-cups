@@ -36,8 +36,10 @@ start avahi avahi-daemon --no-rlimits --no-drop-root --debug
 start cupsd /usr/sbin/cupsd -f
 wait_port 631 cupsd
 
-# cups-browsed picks up mDNS-advertised IPP services and creates queues
-start cups-browsed /usr/sbin/cups-browsed
+# cups-browsed picks up mDNS-advertised IPP services. --debug so the
+# integration test can assert the UUID-dedup "is from local CUPS, ignored"
+# decision (logged at debug level).
+start cups-browsed /usr/sbin/cups-browsed --debug
 
 # supvan-printer-app — mock backend, advertises over mDNS via ipp-printer-app
 export SUPVAN_PORT="${IPP_PORT}"
