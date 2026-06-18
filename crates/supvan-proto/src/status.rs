@@ -123,40 +123,59 @@ pub fn parse_status(data: &[u8]) -> Option<PrinterStatus> {
     })
 }
 
-/// Parse material info from CMD_RETURN_MAT response.
+/// Parse material info from CMD_RETURN_MAT response (BT framing).
+///
+/// The first 22 bytes are the BT response header; the material payload
+/// itself starts at offset 22 and is decoded by [`parse_material_payload`].
+///
+/// BT material responses do **not** carry the printer's device serial —
+/// the response ends at the last counter field, before the trailing
+/// ASCII serial USB ships. Use the BlueZ `Device1.Name` property for
+/// the BT-side serial instead.
 pub fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
-    if data.len() < 43 {
-        return None;
-    }
-    if data[0] != MAGIC1 || data[1] != MAGIC2 {
+    if data.len() < 22 || data[0] != MAGIC1 || data[1] != MAGIC2 {
         return None;
     }
     if data[7] != CMD_RETURN_MAT {
         return None;
     }
+    parse_material_payload(&data[22..], None)
+}
 
-    let uuid = hex_upper(&data[22..29]);
-    let code = hex_upper(&data[29..37]);
-    // SN: big-endian from bytes 37-38
-    let sn = ((data[38] as u16) << 8) | (data[37] as u16);
-    let label_type = data[39];
-    let width_mm = data[40];
-    let height_mm = data[41];
-    let gap_mm = data[42];
-
-    let remaining = if data.len() >= 47 {
-        Some(u32::from_le_bytes([data[43], data[44], data[45], data[46]]))
+/// Decode the per-transport material payload. `device_sn_ascii` is what
+/// USB tacks on after the counter fields (16 ASCII bytes null-padded);
+/// BT doesn't include it.
+///
+/// Common payload layout (verified by `crates/supvan-cli/examples/material_probe`
+/// against a T50M Pro):
+///
+/// | Offset | Size | Field                                           |
+/// |-------:|-----:|-------------------------------------------------|
+/// |   0    | 7    | RFID tag UID (uuid)                             |
+/// |   7    | 8    | RFID tag code/signature (code)                  |
+/// |  15    | 2    | label SN counter, LE u16                        |
+/// |  17    | 1    | label_type                                      |
+/// |  18    | 1    | width_mm                                        |
+/// |  19    | 1    | height_mm                                       |
+/// |  20    | 1    | gap_mm                                          |
+/// |  21    | 4    | labels remaining, LE u32                        |
+/// |  25+   |      | additional vendor fields (not yet decoded)      |
+pub fn parse_material_payload(p: &[u8], device_sn_ascii: Option<String>) -> Option<MaterialInfo> {
+    if p.len() < 21 {
+        return None;
+    }
+    let uuid = hex_upper(&p[0..7]);
+    let code = hex_upper(&p[7..15]);
+    let sn = u16::from_le_bytes([p[15], p[16]]);
+    let label_type = p[17];
+    let width_mm = p[18];
+    let height_mm = p[19];
+    let gap_mm = p[20];
+    let remaining = if p.len() >= 25 {
+        Some(u32::from_le_bytes([p[21], p[22], p[23], p[24]]))
     } else {
         None
     };
-
-    let device_sn = if data.len() >= 57 {
-        let sn_str: String = (0..6).map(|i| format!("{:02}", data[51 + i])).collect();
-        Some(sn_str)
-    } else {
-        None
-    };
-
     Some(MaterialInfo {
         uuid,
         code,
@@ -166,7 +185,7 @@ pub fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
         height_mm,
         gap_mm,
         remaining,
-        device_sn,
+        device_sn: device_sn_ascii,
     })
 }
 

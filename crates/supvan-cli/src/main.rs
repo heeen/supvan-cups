@@ -137,11 +137,19 @@ fn cmd_material(target: &str) {
     match printer.query_material() {
         Ok(Some(mat)) => {
             println!(
-                "Label: {}mm x {}mm (type={}, gap={}mm)",
+                "Label:     {}mm x {}mm  (type={}, gap={}mm)",
                 mat.width_mm, mat.height_mm, mat.label_type, mat.gap_mm
             );
-            if let Some(remaining) = mat.remaining {
-                println!("Remaining: {} labels", remaining);
+            println!("Label SN:  {}", mat.sn);
+            println!("RFID UID:  {}", mat.uuid);
+            println!("RFID code: {}", mat.code);
+            match mat.remaining {
+                Some(r) => println!("Remaining: {r} labels"),
+                None => println!("Remaining: (not reported)"),
+            }
+            match mat.device_sn {
+                Some(s) => println!("Device SN: {s}"),
+                None => println!("Device SN: (not in this response)"),
             }
         }
         Ok(None) => {

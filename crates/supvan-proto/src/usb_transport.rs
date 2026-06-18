@@ -81,64 +81,28 @@ impl UsbHidTransport {
 
     /// Parse material info from a USB HID RETURN_MAT response.
     ///
-    /// The 64-byte report layout (from Electron app reverse-engineering):
-    ///   [0]       length/type indicator
-    ///   [1..8]    status bytes (same as INQUIRY_STA)
-    ///   [19]      width_mm
-    ///   [20]      height_mm
-    ///   [21]      gap_mm
-    ///   [22]      label_type
-    ///   [31..32]  SN (LE16)
-    ///   [40..]    device serial as ASCII (null-terminated)
+    /// The 64-byte report is just a 1-byte length prefix followed by the
+    /// same material payload the BT transport carries (verified by
+    /// `crates/supvan-cli/examples/material_probe`). USB additionally
+    /// tacks 16 bytes of null-terminated ASCII device serial onto the
+    /// end at offset 40 — BT doesn't include this.
     fn parse_usb_material(resp: &[u8]) -> Option<MaterialInfo> {
-        if resp.len() < 40 {
+        if resp.len() < 22 {
             log::debug!("USB material response too short: {} bytes", resp.len());
             return None;
         }
-
-        let width_mm = resp[19];
-        let height_mm = resp[20];
-        let gap_mm = resp[21];
-        let label_type = resp[22];
-        let sn = u16::from_le_bytes([resp[31], resp[32]]);
-
-        // Device serial at offset 40, null-terminated ASCII
+        // ASCII device serial at offset 40 (USB-only addition).
         let dev_sn = if resp.len() > 40 {
             let end = resp[40..]
                 .iter()
                 .position(|&b| b == 0)
                 .unwrap_or(resp.len() - 40);
             let s = String::from_utf8_lossy(&resp[40..40 + end]).to_string();
-            if s.is_empty() {
-                None
-            } else {
-                Some(s)
-            }
+            if s.is_empty() { None } else { Some(s) }
         } else {
             None
         };
-
-        log::info!(
-            "USB material: {}x{}mm gap={}mm type={} sn={} dev_sn={:?}",
-            width_mm,
-            height_mm,
-            gap_mm,
-            label_type,
-            sn,
-            dev_sn
-        );
-
-        Some(MaterialInfo {
-            uuid: String::new(),
-            code: String::new(),
-            sn,
-            label_type,
-            width_mm,
-            height_mm,
-            gap_mm,
-            remaining: None,
-            device_sn: dev_sn,
-        })
+        crate::status::parse_material_payload(&resp[1..], dev_sn)
     }
 
     /// Parse the 6 status bytes from an 8-byte USB HID response.
