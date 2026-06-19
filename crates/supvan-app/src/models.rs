@@ -98,7 +98,10 @@ pub fn load() {
             let media_names: Vec<CString> = f
                 .media_mm
                 .iter()
-                .map(|[w, h]| CString::new(format!("oe_{w}x{h}mm_{w}x{h}mm")).unwrap())
+                // PWG 5101.1 self-describing name: metric dimensions take the
+                // `om_` (other-metric) class prefix; `oe_` is for inches and
+                // fails the IPP Everywhere media-name regex.
+                .map(|[w, h]| CString::new(format!("om_{w}x{h}mm_{w}x{h}mm")).unwrap())
                 .collect();
             let media_sizes: Vec<[c_int; 2]> =
                 f.media_mm.iter().map(|[w, h]| [w * 100, h * 100]).collect();
