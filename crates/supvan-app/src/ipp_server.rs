@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use parking_lot::RwLock;
 use ipp_printer_app::{
-    default_state_path, DeviceBackend, JobContext, JobFailure, PrinterConfig, PrinterReason,
-    PrinterRegistry, Server, ServerOptions,
+    default_state_path, DeviceBackend, JobContext, JobFailure, PollStatus, PrinterConfig,
+    PrinterReason, PrinterRegistry, ReadyMedia, Server, ServerOptions,
 };
 
 use crate::discover::BtCandidate;
@@ -129,7 +129,7 @@ impl DeviceBackend for SupvanDeviceBackend {
         }
     }
 
-    fn poll_status(&self, config: &PrinterConfig) -> Option<PrinterReason> {
+    fn poll_status(&self, config: &PrinterConfig) -> Option<PollStatus> {
         let dev = if config.device_uri.starts_with("supvan://") {
             crate::device::open_supvan(&config.device_uri)
         } else if config.device_uri.starts_with("mock://") {
@@ -139,6 +139,8 @@ impl DeviceBackend for SupvanDeviceBackend {
         }?;
 
         let mut reasons = dev.status();
+        let mut ready_media = None;
+        let mut supply_percent = None;
 
         // Material query: surfaces labels-remaining + roll-swap detection.
         // Skipped on mock devices (dev.material() returns None).
@@ -170,16 +172,50 @@ impl DeviceBackend for SupvanDeviceBackend {
             }
             cache.insert(key, fp);
 
+            // Publish the loaded roll as the dynamic media-ready / media-col-ready.
+            // PWG self-describing name uses the om_ (metric) class; size in
+            // hundredths of a millimetre.
+            let (w, h) = (mat.width_mm as i32, mat.height_mm as i32);
+            if w > 0 && h > 0 {
+                ready_media = Some(ReadyMedia {
+                    name: format!("om_{w}x{h}mm_{w}x{h}mm"),
+                    size_hmm: [w * 100, h * 100],
+                    media_type: "labels".to_string(),
+                });
+            }
+
             if let Some(remaining) = mat.remaining {
                 if remaining == 0 {
                     reasons |= PrinterReason::MEDIA_EMPTY;
                 } else if remaining <= MEDIA_LOW_THRESHOLD {
                     reasons |= PrinterReason::MARKER_SUPPLY_LOW;
                 }
+                // The firmware reports remaining *labels*, not a percentage, and
+                // we don't know the roll's original count. Clamp to 0–100 as a
+                // gauge: full while plenty remain, counting down near empty.
+                supply_percent = Some(remaining.min(100) as u8);
             }
         }
 
-        Some(reasons)
+        Some(PollStatus {
+            reasons,
+            ready_media,
+            supply_percent,
+        })
+    }
+
+    fn identify(&self, config: &PrinterConfig, actions: &[String]) {
+        // Map Identify-Printer to a physical beep via CHECK_DEVICE. Any action
+        // keyword (display/sound/flash) triggers the same buzzer.
+        let dev = if config.device_uri.starts_with("supvan://") {
+            crate::device::open_supvan(&config.device_uri)
+        } else {
+            return;
+        };
+        if let Some(dev) = dev {
+            log::info!("identify {} (actions={actions:?})", config.name);
+            dev.identify();
+        }
     }
 
     fn driver_for_device(&self, device_id: &str, device_uri: &str) -> Option<String> {

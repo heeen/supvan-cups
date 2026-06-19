@@ -45,6 +45,14 @@ impl PrinterHandle {
             Self::Shared(arc) => arc.lock().unwrap().print_compressed(compressed, speed),
         }
     }
+
+    /// CHECK_DEVICE — poke the device to confirm presence.
+    pub fn check_device(&self) -> ProtoResult<bool> {
+        match self {
+            Self::Owned(p) => p.check_device(),
+            Self::Shared(arc) => arc.lock().unwrap().check_device(),
+        }
+    }
 }
 
 /// Opaque device handle wrapping a connected Printer (or None in mock mode).
@@ -170,6 +178,19 @@ impl KsDevice {
                 log::debug!("KsDevice::material: query failed: {e}");
                 None
             }
+        }
+    }
+
+    /// Identify-Printer: poke the device so it makes itself known. We send
+    /// CHECK_DEVICE — the only presence primitive in the protocol; on Supvan
+    /// hardware exercising the link makes the unit chirp. No-op on mock.
+    pub fn identify(&self) {
+        let Some(printer) = self.printer.as_ref() else {
+            return;
+        };
+        match printer.check_device() {
+            Ok(present) => log::info!("KsDevice::identify: check_device -> present={present}"),
+            Err(e) => log::warn!("KsDevice::identify: check_device failed: {e}"),
         }
     }
 }
