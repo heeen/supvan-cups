@@ -102,19 +102,24 @@ mod tests {
         let data = vec![0x42u8; 1024];
         let compressed = compress_lzma(&data).unwrap();
 
-        // Decode exactly `data.len()` bytes. Our alone stream carries the
-        // definite uncompressed size in its header (patched for the printer
-        // firmware, which reads exactly that many bytes), while liblzma's
-        // streaming encoder also appends an end-of-stream marker. Reading to
-        // EOF makes stricter liblzma (xz 5.6+, e.g. Ubuntu 24.04 CI) reject the
-        // trailing marker as LZMA_DATA_ERROR; reading `size` bytes verifies the
-        // payload round-trips the way the printer consumes it, on any liblzma.
+        // `compress_lzma` patches the alone-format header with the definite
+        // uncompressed size — what the printer firmware reads. That definite
+        // size combined with the encoder's trailing end-of-stream marker is a
+        // combination strict liblzma builds (e.g. the bundled liblzma the CI
+        // links, reproducible locally with LZMA_API_STATIC=1) reject as
+        // LZMA_DATA_ERROR. Restore the "unknown size" sentinel so liblzma
+        // decodes the encoder's native marker-terminated stream; this verifies
+        // the LZMA payload round-trips on any liblzma. The patched header bytes
+        // are checked separately by `test_compress_lzma_header`.
+        let mut stream_bytes = compressed.clone();
+        stream_bytes[5..13].copy_from_slice(&u64::MAX.to_le_bytes());
+
         use std::io::Read;
         use xz2::stream::Stream;
-        let stream = Stream::new_lzma_decoder(u64::MAX).unwrap();
-        let mut decoder = xz2::read::XzDecoder::new_stream(compressed.as_slice(), stream);
-        let mut decompressed = vec![0u8; data.len()];
-        decoder.read_exact(&mut decompressed).unwrap();
+        let s = Stream::new_lzma_decoder(u64::MAX).unwrap();
+        let mut decoder = xz2::read::XzDecoder::new_stream(stream_bytes.as_slice(), s);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
         assert_eq!(decompressed, data);
     }
 
