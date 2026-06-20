@@ -102,14 +102,19 @@ mod tests {
         let data = vec![0x42u8; 1024];
         let compressed = compress_lzma(&data).unwrap();
 
-        // Decompress using xz2 and verify
+        // Decode exactly `data.len()` bytes. Our alone stream carries the
+        // definite uncompressed size in its header (patched for the printer
+        // firmware, which reads exactly that many bytes), while liblzma's
+        // streaming encoder also appends an end-of-stream marker. Reading to
+        // EOF makes stricter liblzma (xz 5.6+, e.g. Ubuntu 24.04 CI) reject the
+        // trailing marker as LZMA_DATA_ERROR; reading `size` bytes verifies the
+        // payload round-trips the way the printer consumes it, on any liblzma.
+        use std::io::Read;
         use xz2::stream::Stream;
         let stream = Stream::new_lzma_decoder(u64::MAX).unwrap();
-        let mut decompressed = Vec::new();
-        let mut decoder = xz2::write::XzDecoder::new_stream(&mut decompressed, stream);
-        std::io::Write::write_all(&mut decoder, &compressed).unwrap();
-        std::io::Write::flush(&mut decoder).unwrap();
-        drop(decoder);
+        let mut decoder = xz2::read::XzDecoder::new_stream(compressed.as_slice(), stream);
+        let mut decompressed = vec![0u8; data.len()];
+        decoder.read_exact(&mut decompressed).unwrap();
         assert_eq!(decompressed, data);
     }
 
