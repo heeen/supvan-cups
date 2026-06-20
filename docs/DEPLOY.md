@@ -8,25 +8,14 @@ system option is below.
 ## User-scoped (default, no sudo)
 
 ```sh
-# 1. Build + install to ~/.cargo/bin (user-owned).
-cargo install --path crates/supvan-app --force
-
-# 2. Point the service at it via a user drop-in (already in the repo history;
-#    create once). Removing this file reverts to the system binary.
-mkdir -p ~/.config/systemd/user/supvan-printer-app.service.d
-cat > ~/.config/systemd/user/supvan-printer-app.service.d/override.conf <<'EOF'
-[Service]
-ExecStart=
-ExecStart=%h/.cargo/bin/supvan-printer-app server
-EOF
-
-# 3. Reload + (re)start.
-systemctl --user daemon-reload
-systemctl --user enable --now supvan-printer-app
+make deploy
 ```
 
-Redeploy after code changes = just `cargo install --path crates/supvan-app
---force && systemctl --user restart supvan-printer-app`.
+That's it: `cargo install`s the binary to `~/.cargo/bin`, installs a
+self-contained user unit (`etc/supvan-printer-app.user.service`, `%h`-relative)
+and the cleanup hook under `~/.local/lib`, `daemon-reload`s, and enables +
+(re)starts the service. Re-run it after any code change. `make uninstall-user`
+reverses it.
 
 Verify:
 
@@ -37,19 +26,19 @@ ipptool -tv ipp://localhost:8631/ipp/print/<queue> \
     /usr/share/cups/ipptool/get-printer-attributes.test | grep document-format
 ```
 
-## System option (sudo, session-independent)
-
-The base unit `/usr/lib/systemd/user/supvan-printer-app.service` ships an
-`ExecStart=/usr/bin/supvan-printer-app server`. To run that instead, remove the
-user drop-in above and install the binary system-wide:
+## System option (sudo, FHS)
 
 ```sh
-sudo install -m755 target/release/supvan-printer-app /usr/bin/supvan-printer-app
-sudo install -Dm644 data/models.toml /usr/share/supvan-printer-app/models.toml  # optional; binary also embeds it
-systemctl --user daemon-reload && systemctl --user restart supvan-printer-app
+make build
+sudo make install      # binary -> /usr/bin, unit -> /usr/lib/systemd/user, data, udev, dbus
+make uninstall-user    # drop the user override so the /usr binary is used
+systemctl --user daemon-reload && systemctl --user enable --now supvan-printer-app
 ```
 
-For a true root-managed service (running without your login session), add an
+`make install` honours `DESTDIR`/`PREFIX` (default `/usr`) for packaging. To run
+the user unit and the system unit are mutually exclusive — a user unit in
+`~/.config/systemd/user` shadows the `/usr/lib/systemd/user` one, so pick one.
+For a true root-managed service (no login session needed), add an
 `/etc/systemd/system/supvan-printer-app.service` with the same `ExecStart` and
 `systemctl enable --now` it — but note discovery uses your session's BlueZ/Avahi.
 

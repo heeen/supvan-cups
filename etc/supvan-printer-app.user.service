@@ -1,0 +1,15 @@
+[Unit]
+Description=Supvan T50 Pro Printer Application (user-scoped)
+After=bluetooth.target dbus.socket
+
+[Service]
+Type=simple
+# %h = the user's home. Binary comes from `cargo install` (~/.cargo/bin),
+# the cleanup hook from `make install-user` (~/.local/lib). No root needed.
+ExecStart=%h/.cargo/bin/supvan-printer-app server
+ExecStopPost=%h/.local/lib/supvan-printer-app/cups-cleanup.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
