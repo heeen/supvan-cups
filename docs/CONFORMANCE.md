@@ -11,12 +11,27 @@ The suite pulls in `ipp-1.1.test` and `ipp-2.0.test`, so it exercises RFC 8011
 §4.x request validation, PWG 5100.12 description attributes, and PWG 5100.14
 required operations/attributes.
 
-## Status (ipp-printer-app 0.4.0)
+## Status (ipp-printer-app 0.6.0)
 
-**31 PASS / 1 FAIL.** The single remaining failure is the `image/jpeg`
-document-format requirement (PWG 5100.14 §5.2) — a real capability gap, not an
-encoding bug. Everything below was closed in 0.4.0 (see the framework
-CHANGELOG); the supvan-side `om_` media-name fix lives in
+**32 PASS / 0 FAIL — full IPP Everywhere conformance.** The two "cannot be read"
+lines in a fresh checkout are missing optional test *fixtures*
+(`document-a4.pdf`, the `pwg-raster-samples-*` files), not assertion failures.
+
+Closed across three framework releases plus supvan changes:
+
+- **0.4.0** — encoding/validation bugs + missing operations/attributes (see
+  below).
+- **0.5.0** — device-fed dynamic `media-ready` / `media-col-ready` /
+  `printer-supply`.
+- **0.6.0 + supvan** — `image/jpeg` (PWG 5100.14 §5.2, the last required
+  format). The framework surfaces `document-format` to the print callback and
+  drives `document-format-supported` from `PrinterConfig::document_formats`;
+  supvan advertises `image/jpeg` and decodes it in `run_jpeg_job`
+  (`crates/supvan-app/src/ipp_job.rs`): decode → contain-fit onto the loaded
+  label (aspect preserved, centered, white-padded) → existing `KsJob` 8bpp
+  dither→device path.
+
+The supvan-side `om_` (metric) media-name fix lives in
 `crates/supvan-app/src/models.rs`.
 
 ### Closed in 0.4.0 (framework)
@@ -47,28 +62,15 @@ CHANGELOG); the supvan-side `om_` media-name fix lives in
 
 ## Remaining
 
-### Tier 5 — real capability gap (the one suite failure)
+Nothing required is outstanding — the suite is green. Earlier tiers are all
+closed: dynamic device-fed `media-ready` / `media-col-ready` / `printer-supply`
+(0.5.0), Identify-Printer → device `CHECK_DEVICE` ping (supvan backend), and
+`image/jpeg` decode (0.6.0 + `run_jpeg_job`).
 
-- **`document-format-supported` should include `image/jpeg`.** IPP Everywhere
-  requires JPEG decode; we only accept PWG/CUPS raster. Needs a JPEG→raster
-  path. Larger; deferred.
+Possible future polish (not conformance): Floyd–Steinberg dithering for photo
+JPEGs (currently the shared Bayer `dither_line`), and threading the *live*
+loaded-label mm into `run_jpeg_job` (it uses the configured default size today).
 
-### Tier 4 — dynamic, device-fed enrichment **[supvan, optional]**
-
-The framework emits *static* `media-ready` / `media-col-ready` /
-`printer-supply` so the required attributes are present and conformant. They
-don't yet reflect the live roll. We already poll `RETURN_MAT` every cycle, so:
-
-- **`media-ready` / `media-col-ready`** could publish the *currently loaded*
-  roll (width/height/type from `MaterialInfo`) instead of the static default.
-- **`printer-supply` level** could track the labels-remaining counter, which
-  also finishes the "labels remaining in the GUI" thread.
-
-Needs a small framework API so the device backend can push per-poll "ready
-media" + "supply" into the registry, then the attribute builder reads them.
-
-- **Identify-Printer → beep.** The framework dispatches to
-  `DeviceBackend::identify`; supvan's backend can map it to a buzzer/`CHECK_DEVICE`
-  command (currently the default no-op).
-
-Re-run `ipp-everywhere.test` after each change; track the pass delta.
+Re-run `ipp-everywhere.test` after attribute/format changes; track the pass
+delta. The mock backend's `lpadmin -m everywhere` PPD warning is a pre-existing
+mock-only quirk (non-PWG label dims) — see the project memory note.
