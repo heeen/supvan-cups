@@ -3,7 +3,8 @@
 #
 # What this verifies (all in one container, no external network):
 #   1. supvan-printer-app boots in mock mode + serves IPP on $IPP_PORT
-#   2. Get-Printer-Attributes returns sane PWG attrs incl. a printer-uuid
+#   2. Get-Printer-Attributes returns sane PWG attrs incl. a printer-uuid and
+#      advertises image/jpeg (full IPP Everywhere document-format set)
 #   3. Validate-Job is accepted for image/pwg-raster
 #   4. avahi advertises us on _ipp._tcp.local WITH a UUID= TXT key
 #   5. cups-browsed COEXISTENCE: the in-process registrar creates exactly one
@@ -13,7 +14,10 @@
 #      ipp-printer-app → run_cups_raster_job → KsJob mock backend, landing a
 #      .pbm in $SUPVAN_DUMP_DIR; and a CUPS lp job through the registrar's
 #      queue does the same.
-#   7. Lifecycle: status polling, recovery, job-error propagation.
+#   7. Print-Job with a real image/jpeg (ghostscript) round-trips through
+#      run_jpeg_job (decode → contain-fit → dither) to a .pbm — proving the
+#      JPEG document-format is honestly decoded, not just advertised.
+#   8. Lifecycle: status polling, recovery, job-error propagation.
 set -euo pipefail
 
 PORT="${IPP_PORT:-8631}"
@@ -89,6 +93,7 @@ cat >/tmp/get-attrs.test <<'EOF'
     EXPECT printer-name OF-TYPE nameWithoutLanguage WITH-VALUE "supvan-mock"
     EXPECT printer-state OF-TYPE enum
     EXPECT document-format-supported OF-TYPE mimeMediaType WITH-VALUE "image/pwg-raster"
+    EXPECT document-format-supported OF-TYPE mimeMediaType WITH-VALUE "image/jpeg"
     EXPECT urf-supported OF-TYPE keyword
     EXPECT printer-uuid OF-TYPE uri WITH-VALUE "/^urn:uuid:/"
 }
@@ -257,6 +262,61 @@ echo "Dump artefacts:"
 find "$DUMP_DIR" -type f | sort | head
 
 ##############################################################################
+# image/jpeg honest-decode round-trip.
+#
+# The framework advertises image/jpeg (asserted in Get-Printer-Attributes
+# above); this proves it's actually decoded. A real JPEG is sent with
+# document-format=image/jpeg → the print closure routes it to run_jpeg_job
+# (decode → contain-fit onto the label → dither → mock backend), landing a
+# fresh .pbm. 50% gray fills the page so the dithered output is non-trivial.
+##############################################################################
+step "Generate a JPEG sample with ghostscript"
+gs -q -dNOPAUSE -dBATCH \
+    -sDEVICE=jpeg -sOutputFile=/tmp/test.jpg \
+    -g400x300 -r203 \
+    -c "0.5 setgray clippath fill showpage" 2>&1 | head -5
+test -s /tmp/test.jpg
+echo "jpeg: $(wc -c </tmp/test.jpg) bytes, SOI=$(od -An -tx1 -N2 /tmp/test.jpg | tr -d ' ')"  # ffd8
+
+step "Print-Job (image/jpeg) round-trip via ipptool"
+# Clear the dump dir so the .pbm we wait for is unambiguously the JPEG render.
+rm -rf "$DUMP_DIR" && mkdir -p "$DUMP_DIR"
+cat >/tmp/print-jpeg.test <<'EOF'
+{
+    NAME "Print-Job image/jpeg"
+    OPERATION Print-Job
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR name requesting-user-name ipp-test
+    ATTR name job-name ci-jpeg
+    ATTR mimeMediaType document-format image/jpeg
+    FILE /tmp/test.jpg
+    STATUS successful-ok
+    EXPECT job-id OF-TYPE integer COUNT 1
+    EXPECT job-state OF-TYPE enum WITH-VALUE >=3
+}
+EOF
+ipptool -tv "${PRINTER_URI}" /tmp/print-jpeg.test
+
+step "Wait for the JPEG render to dump a page"
+jpeg_dumped=0
+for _ in $(seq 1 20); do
+    if find "$DUMP_DIR" -type f -name '*.pbm' 2>/dev/null | grep -q .; then
+        jpeg_dumped=1; break
+    fi
+    sleep 0.5
+done
+if (( ! jpeg_dumped )); then
+    echo "FAIL: image/jpeg job produced no .pbm in $DUMP_DIR (decode/render failed)" >&2
+    tail -n 20 /tmp/supvan.log 2>/dev/null || true
+    exit 1
+fi
+echo "image/jpeg decoded + rendered to:"
+find "$DUMP_DIR" -type f | sort | head
+
+##############################################################################
 # Lifecycle: status polling, recovery, and job-error propagation.
 #
 # The status::spawn poller hits the backend's poll_status() every
@@ -352,4 +412,4 @@ else
 fi
 
 echo
-echo "PASS: discovery + IPP attributes + Print-Job round-trip + lifecycle succeeded"
+echo "PASS: discovery + IPP attributes + Print-Job (PWG + JPEG) round-trip + lifecycle succeeded"
