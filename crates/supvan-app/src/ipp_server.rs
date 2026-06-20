@@ -276,15 +276,30 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                     .config
                     .clone()
             };
-            run_cups_raster_job(
-                &cfg.name,
-                &cfg.device_uri,
-                cfg.darkness,
-                cfg.printhead_width_dots,
-                &cfg.driver_name,
-                &raster,
-                copies,
-            )
+            // image/jpeg is decoded in-process (run_jpeg_job); everything else
+            // is CUPS/PWG raster (CUPS' driverless path already rasterizes).
+            if ctx.document_format == "image/jpeg" {
+                let media_size = cfg.media_sizes.first().copied().unwrap_or([4000, 3000]);
+                crate::ipp_job::run_jpeg_job(
+                    &cfg.name,
+                    &cfg.device_uri,
+                    cfg.darkness,
+                    cfg.printhead_width_dots,
+                    media_size,
+                    &raster,
+                    copies,
+                )
+            } else {
+                run_cups_raster_job(
+                    &cfg.name,
+                    &cfg.device_uri,
+                    cfg.darkness,
+                    cfg.printhead_width_dots,
+                    &cfg.driver_name,
+                    &raster,
+                    copies,
+                )
+            }
         },
     );
 

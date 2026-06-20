@@ -23,3 +23,6 @@ print_raster = "0.1"
 futures = "0.3"
 parking_lot = "0.12"
 libc = "0.2"
+# JPEG decode for the image/jpeg document-format path (IPP Everywhere). Only
+# the jpeg codec is enabled to keep the build lean.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
