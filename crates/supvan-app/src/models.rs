@@ -84,12 +84,22 @@ fn registry() -> &'static Registry {
 /// invalid.
 ///
 /// Must be called exactly once, before any other function in this module.
+/// The default model table, baked into the binary so a `cargo install`'d
+/// (or otherwise relocated) binary is self-contained. Overridden by
+/// `$SUPVAN_MODELS` or a `models.toml` found on disk — see [`find_toml_path`].
+const EMBEDDED_MODELS: &str = include_str!("../../../data/models.toml");
+
 pub fn load() {
-    let path = find_toml_path();
-    let contents =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+    let (contents, source) = match find_toml_path() {
+        Some(path) => {
+            let c = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+            (c, path)
+        }
+        None => (EMBEDDED_MODELS.to_string(), "<embedded>".to_string()),
+    };
     let toml: ModelsToml =
-        toml::from_str(&contents).unwrap_or_else(|e| panic!("failed to parse {path}: {e}"));
+        toml::from_str(&contents).unwrap_or_else(|e| panic!("failed to parse {source}: {e}"));
 
     let families: Vec<DriverFamily> = toml
         .families
@@ -170,10 +180,11 @@ pub fn load() {
     }
 }
 
-fn find_toml_path() -> String {
+/// Locate a `models.toml` override on disk, or `None` to use [`EMBEDDED_MODELS`].
+fn find_toml_path() -> Option<String> {
     // 1. Explicit override
     if let Ok(path) = std::env::var("SUPVAN_MODELS") {
-        return path;
+        return Some(path);
     }
 
     // 2. Development / cargo run from workspace root
@@ -182,18 +193,10 @@ fn find_toml_path() -> String {
         "data/models.toml",
         "/usr/share/supvan-printer-app/models.toml",
     ];
-
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            return path.to_string();
-        }
-    }
-
-    panic!(
-        "models.toml not found; searched: $SUPVAN_MODELS, {}\n\
-         Set SUPVAN_MODELS=/path/to/models.toml to override.",
-        candidates.join(", ")
-    );
+    candidates
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
