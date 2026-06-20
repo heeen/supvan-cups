@@ -51,13 +51,19 @@ fn parse_pbm_p4(pbm: &[u8]) -> (u32, u32, usize) {
 
 /// Decompress LZMA1-alone data (as produced by `compress_lzma`).
 fn decompress_lzma(data: &[u8]) -> Vec<u8> {
-    use std::io::Write;
+    use std::io::Read;
+    // `compress_lzma` patches the alone header with a definite uncompressed
+    // size (what the printer firmware reads); combined with the encoder's
+    // trailing end-marker, strict liblzma builds — the bundled liblzma the CI
+    // links, reproducible with LZMA_API_STATIC=1 — reject it. Restore the
+    // unknown-size sentinel so liblzma decodes the encoder's native
+    // marker-terminated stream.
+    let mut stream_bytes = data.to_vec();
+    stream_bytes[5..13].copy_from_slice(&u64::MAX.to_le_bytes());
     let stream = xz2::stream::Stream::new_lzma_decoder(u64::MAX).unwrap();
+    let mut decoder = xz2::read::XzDecoder::new_stream(stream_bytes.as_slice(), stream);
     let mut decompressed = Vec::new();
-    let mut decoder = xz2::write::XzDecoder::new_stream(&mut decompressed, stream);
-    decoder.write_all(data).unwrap();
-    decoder.flush().unwrap();
-    drop(decoder);
+    decoder.read_to_end(&mut decompressed).unwrap();
     decompressed
 }
 
