@@ -72,5 +72,11 @@ JPEGs (currently the shared Bayer `dither_line`), and threading the *live*
 loaded-label mm into `run_jpeg_job` (it uses the configured default size today).
 
 Re-run `ipp-everywhere.test` after attribute/format changes; track the pass
-delta. The mock backend's `lpadmin -m everywhere` PPD warning is a pre-existing
-mock-only quirk (non-PWG label dims) — see the project memory note.
+delta.
+
+Note: under `SUPVAN_MOCK=1` the registrar logs an `lpadmin -m everywhere` PPD
+warning. This is a mock-only quirk — the mock's synthetic label dimensions
+don't resolve to a standard PWG size, so CUPS's PPD generator bails. Real
+hardware advertises resolvable sizes and is unaffected; the integration test
+still passes because the registrar's queue is created before the mock's roll
+empties.

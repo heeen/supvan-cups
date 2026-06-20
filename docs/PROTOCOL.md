@@ -9,10 +9,14 @@ crib sheet for it.
 
 Sources of ground truth:
 
-- The vendor Android SDK and the vendor's Electron desktop app, both
-  reverse-engineered in 2026-05 while bringing up the original C-PAPPL
-  backend. Where a field comment says "from Electron app" or
-  "byteToString(A,11,21)" it's a direct port of that source.
+- The vendor Android app (Katasymbol v1.4.20, decompiled with jadx) and the
+  vendor's Electron desktop app, both reverse-engineered during initial
+  bring-up. Key Android sources: `BasePrint.java` (framing/transport/status),
+  `T50PlusPrint.java` (print flow + material), `BluetoothUtils.java` /
+  `BLEUtils.java` (transports), `LzmaUtils.java` (compression params),
+  `{MSTA,FSTA,PAGE}_REG_BITS.java` (status/page bits). Where a field comment
+  says "from Electron app" or "byteToString(A,11,21)" it's a direct port of
+  that source.
 - `supvan-proto/src/{cmd,status,bt_transport,usb_transport}.rs` — the
   Rust implementation. Always more authoritative than this document.
 - Live captures from the working katasymbol deployment (the BT side
@@ -280,6 +284,22 @@ remaining-label counter (probably also somewhere in 30..50). The
 | BT `device_sn` BCD vs USB ASCII | `status::parse_material` | The two transports report the same physical value but in different encodings; downstream code can't naïvely string-compare. |
 | `SET_RFID_DATA` (0x5D) | not exercised by any code path | We've never sent it. Firmware support unknown. |
 | `BUF_FULL` (0x10) handling | request side is implemented; what the device sends back when its buffer fills mid-print isn't fully decoded. | KsJob's per-packet ack loop handles the timing but doesn't surface a typed status. |
+
+## Appendix: BLE GATT transport (vendor app; not implemented here)
+
+We talk to the printers over Classic Bluetooth RFCOMM/SPP and USB HID. The
+vendor Android app *also* supports a BLE GATT transport, which we do **not**
+implement but document here for completeness (a future contributor could add
+it as another [`transport::Transport`] impl). The same 16-byte command framing
+rides over GATT notify/write characteristics:
+
+- Classic SPP (what we use): RFCOMM UUID `00001101-0000-1000-8000-00805F9B34FB`,
+  channel auto-detected; 512-byte write chunks, ~10 ms inter-chunk drain.
+- BLE GATT (vendor-only): MTU requested at 200; one of three service/char
+  patterns is auto-detected — `0000fee7-…` (notify == write `0000FEC1-…`),
+  `0000e0ff-3c17-…` (notify `0000ffe1-…`, write `0000ffe9-…`), or
+  `0000ff00-…` (notify `0000ff01-…`, write `0000ff02-…`); responses polled up
+  to ~4 s.
 
 ## See also
 

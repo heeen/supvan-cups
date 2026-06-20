@@ -31,14 +31,10 @@ avahi-browse -rpt _ipp._tcp | grep UUID=   # advert carries the queue uuid
 
 ### Coexistence with cups-browsed (automatic)
 
-Because the advertised `UUID=` matches the local queue's `printer-uuid`,
-a co-resident `cups-browsed` dedupes the service and stands down (its debug
-log shows *"is from local CUPS, ignored"*) rather than building a broken
-`implicitclass://` queue that can't route to a same-host service. No
-`cups-browsed` config change or disabling is needed — it works whether
-`cups-browsed` is enabled or not. If `cups-browsed` was already running and
-races in a duplicate before its local-queue cache updates, the registrar
-sweeps it within ~20 s.
+The matching `UUID=` makes a co-resident `cups-browsed` dedupe our advert and
+stand down instead of building a broken `implicitclass://` queue — no config
+change or disabling needed. See **[DEPLOY.md](DEPLOY.md#cups-browsed-coexistence)**
+for the full mechanism and the one-time cache-rebuild caveat.
 
 ### Manual `lpadmin` (fallback / other hosts)
 
@@ -57,12 +53,13 @@ directly. Disable mDNS at compile time with `--no-default-features` on
 ## 3. Print
 
 ```sh
-# Small CUPS raster from supvan-cli test pattern, or any .pwg/.ras job:
-supvan-cli test-print --mock   # generates local PBM; convert separately if needed
-lp -d "$PRINTER" /path/to/job.ras
+# Any file CUPS can rasterize (text/PDF/image), or a ready .pwg:
+lp -d "$PRINTER" /path/to/file
 ```
 
-Check server logs for `KsJob::transfer_page` and job completion.
+Check server logs for `KsJob::transfer_page` and job completion. To print a
+test pattern straight to the hardware (bypassing CUPS), use
+`supvan-cli test-print <target>`.
 
 `lpstat -W all -o "$PRINTER"` lists jobs (each gets a distinct job-id). Cancel
 in-flight jobs via `cancel <jobid>`.
@@ -75,16 +72,15 @@ ipptool -tv ipp://localhost:8631/ipp/print/"$PRINTER" \
     /usr/share/cups/ipptool/get-printer-attributes.test
 ```
 
-Required attributes for `-m everywhere` (server already emits these):
-
-- `document-format-supported` includes `image/pwg-raster`
-- `print-color-mode-supported` includes `monochrome`
-- `copies-supported` range 1–999
-- `media-supported` / `media-default` from `models.toml`
-- `media-col-default` / `media-col-supported` (PWG dimensions)
-- `printer-uri-supported` as `uri`, not `keyword`
+The full set of attributes required for `-m everywhere` (and the IPP Everywhere
+`ipptool` audit) is documented in **[CONFORMANCE.md](CONFORMANCE.md)** — the
+server passes the suite 32/0.
 
 ## 5. Cleanup
+
+Normally nothing to do: the service's `ExecStopPost` (`cups-cleanup.sh`) removes
+the auto-created queue on stop. To remove a queue you created by hand with the
+manual `lpadmin` fallback above:
 
 ```sh
 sudo lpadmin -x "$PRINTER"

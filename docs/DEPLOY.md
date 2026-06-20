@@ -35,8 +35,8 @@ make uninstall-user    # drop the user override so the /usr binary is used
 systemctl --user daemon-reload && systemctl --user enable --now supvan-printer-app
 ```
 
-`make install` honours `DESTDIR`/`PREFIX` (default `/usr`) for packaging. To run
-the user unit and the system unit are mutually exclusive — a user unit in
+`make install` honours `DESTDIR`/`PREFIX` (default `/usr`) for packaging. The
+user unit and the system unit are mutually exclusive — a user unit in
 `~/.config/systemd/user` shadows the `/usr/lib/systemd/user` one, so pick one.
 For a true root-managed service (no login session needed), add an
 `/etc/systemd/system/supvan-printer-app.service` with the same `ExecStart` and

@@ -1,180 +1,158 @@
-# Supvan Printer Driver
+# Supvan label printer driver
 
-Linux printer driver for Supvan thermal label printers. Provides a
-**Rust IPP Everywhere** printer application (`ipp-printer-app` + Axum on port 8631)
-and a command-line diagnostic tool.
+A pure-Rust **IPP Everywhere** printer application for Supvan T-series thermal
+label printers (and Katasymbol-branded equivalents), plus a command-line
+diagnostic tool. It runs a local IPP server that CUPS — and any AirPrint /
+IPP-Everywhere client — can print to driverlessly over USB or Bluetooth.
 
-The printer protocol was reverse-engineered from the Katasymbol Android
-app (v1.4.20).
+- **Full IPP Everywhere conformance** — `ipptool ipp-everywhere.test` passes
+  32/0 (see [docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
+- **Formats**: PWG/CUPS raster and `image/jpeg` (decoded in-process).
+- **USB + Bluetooth**, unified into one logical printer per device.
+- **Coexists with `cups-browsed`** — auto-creates a direct CUPS queue and
+  dedupes its own mDNS advert by UUID, no manual `lpadmin`.
 
-## Supported Models
+Built on [`ipp-printer-app`](https://crates.io/crates/ipp-printer-app), this
+project's own generic IPP-Everywhere framework. The printer protocol was
+reverse-engineered from the Katasymbol Android app (v1.4.20); the repo is
+`github.com/heeen/supvan-cups` (the working tree is named `katasymbol`).
 
-All models use USB VID `0x1820`. Bluetooth and USB HID are auto-discovered.
+## Supported printers
+
+All USB models use VID `0x1820`; Bluetooth and USB are auto-discovered.
 
 | Family | Models | DPI | Printhead |
 |--------|--------|-----|-----------|
-| T50 Series | T50M, T50M Pro, T50M Plus, T50s, T50s Pro | 203 | 48mm / 384 dots |
-| T80 Series | T80M, T80M Pro | 201 | 72mm / 568 dots |
-| G Series | G11, G15, G18, G18 Pro | 193 | 25mm / 190 dots |
-| TP76 Series | TP76I, TP76I Pro | 305 | 76mm / 912 dots |
-| TP80 Series | TP80A, TP80A Pro | 305 | 80mm / 960 dots |
-| TP86 Series | TP86A, TP86A Pro | 305 | 86mm / 1032 dots |
-| SP650 | SP650 | 203 | 48mm / 384 dots |
+| T50 Series | T50M, T50M Pro, T50M Plus, T50s, T50s Pro | 203 | 48 mm / 384 dots |
+| T80 Series | T80M, T80M Pro | 201 | 72 mm / 568 dots |
+| G Series | G11, G15, G18, G18 Pro | 193 | 25 mm / 190 dots |
+| TP76 Series | TP76I, TP76I Pro | 305 | 76 mm / 912 dots |
+| TP80 Series | TP80A, TP80A Pro | 305 | 80 mm / 960 dots |
+| TP86 Series | TP86A, TP86A Pro | 305 | 86 mm / 1032 dots |
+| SP650 | SP650 | 203 | 48 mm / 384 dots |
 
-BT-only models (E10, E11, E12, E16) are also supported via the T50 driver.
-Katasymbol-branded equivalents (e.g. M50 Pro) work as their Supvan counterparts.
+Bluetooth-only models (E10, E11, E12, E16) run on the T50 driver, as do
+Katasymbol-branded equivalents. The model registry lives in
+[`data/models.toml`](data/models.toml) — it is compiled into the binary as a
+fallback and can be overridden at runtime with `SUPVAN_MODELS` (no recompile).
 
-Supported transports:
+## How it works
 
-- **Bluetooth** — RFCOMM (`btrfcomm://` scheme), auto-discovered via BlueZ D-Bus
-- **USB HID** — hidraw (`usbhid://` scheme), auto-discovered via sysfs
-
-Model data is defined in `data/models.toml` and can be extended without
-recompilation.
-
-## Crate Structure
-
-| Crate | Description |
-|-------|-------------|
-| `supvan-proto` | Printer protocol: Bluetooth RFCOMM and USB HID transports, commands, status parsing, bitmap transforms, LZMA compression |
-| `ipp-printer-app` | Generic IPP Everywhere framework (`ipp` + Axum + `print_raster`, optional mDNS via `mdns-sd`). Device-agnostic; a consumer crate plugs in a `DeviceBackend` + `RasterDriver`. |
-| `supvan-app` | Printer application binary (`supvan-printer-app`) |
-| `supvan-cli` | Command-line diagnostic tool (`supvan-cli`) |
-
-## Prerequisites
-
-Rust toolchain (edition 2021) and:
-
-```sh
-# Debian / Ubuntu
-sudo apt install libcups2-dev pkg-config libdbus-1-dev bluez
+```
+discovery          IPP server (ipp-printer-app)         device (supvan-proto)
+USB + BT  ──┐                                       ┌── column-major 1-bit pack
+            ├─► supvan://<id> ─► Print-Job ─► print_job ─► LZMA ─► USB/BT transfer
+mock://  ───┘    (mock://ID)        │  └─ image/jpeg ─► run_jpeg_job (decode→fit→dither)
+                                    └──── PWG/CUPS raster ─► run_cups_raster_job
 ```
 
-No `libpappl-dev` is required — the IPP stack is pure Rust.
+- **Discovery** unifies a printer's USB (hidraw) and Bluetooth (RFCOMM)
+  interfaces into a single `supvan://<id>` device; `SUPVAN_MOCK=1` substitutes a
+  synthetic `mock://` device.
+- The **IPP server** (from `ipp-printer-app`) receives jobs; the `print_job`
+  callback branches on `document-format` → `run_jpeg_job` (JPEG: decode →
+  contain-fit onto the loaded label → dither) or `run_cups_raster_job`
+  (PWG/CUPS raster), both feeding the `supvan-proto` pack → LZMA → transfer
+  pipeline.
+- An in-process **registrar** creates the direct
+  `ipp://localhost:8631/ipp/print/<name>` CUPS queue, reads back its
+  `printer-uuid`, and advertises that UUID over mDNS so a co-resident
+  `cups-browsed` dedupes instead of building a broken `implicitclass://` queue.
+- A **status poller** surfaces the loaded roll (`media-ready` / `media-col-ready`),
+  a labels-remaining supply gauge (`printer-supply`), and error reasons.
 
-CUPS driverless printing: see [docs/CUPS_ACCEPTANCE.md](docs/CUPS_ACCEPTANCE.md).
+## Workspace layout
 
-## Building and Installing
+| Crate | Purpose |
+|-------|---------|
+| `crates/supvan-proto` | Wire protocol: USB-HID + BT-RFCOMM transports, commands, status/material parsing, bitmap packing, LZMA compression. No IPP knowledge. |
+| `crates/supvan-app` | The printer application binary `supvan-printer-app`. |
+| `crates/supvan-cli` | The `supvan-cli` diagnostic tool. |
+
+The IPP/HTTP layer is the external crate **`ipp-printer-app`** (`= "0.6"`, on
+crates.io) — this repo's own device-agnostic framework, not a workspace member.
+
+## Install & run
+
+The app needs no privileges (unprivileged port 8631, `lpadmin` as your user),
+so the default is a **user-scoped** install — no sudo:
 
 ```sh
-make build                # cargo build --release
-sudo make install         # installs binary, systemd unit, data files, udev rule
-sudo udevadm control --reload-rules
+make deploy      # cargo install → ~/.cargo/bin + a user systemd unit, then start
 ```
 
-`make install` places:
+Re-run `make deploy` after any change. `make uninstall-user` reverses it. For a
+system-wide (FHS) install instead, `sudo make install`. Full details and the
+`cups-browsed` story are in **[docs/DEPLOY.md](docs/DEPLOY.md)**; a manual CUPS
+acceptance walkthrough is in [docs/CUPS_ACCEPTANCE.md](docs/CUPS_ACCEPTANCE.md).
 
-| File | Destination |
-|------|-------------|
-| `supvan-printer-app` | `/usr/bin/` |
-| `data/models.toml` | `/usr/share/supvan-printer-app/` |
-| `supvan-printer-app.service` | `/usr/lib/systemd/user/` |
-| `cups-cleanup.sh`, `cups-register.sh` | `/usr/lib/supvan-printer-app/` |
-| `70-supvan-t50.rules` | `/usr/lib/udev/rules.d/` |
+Build prerequisites (Debian/Ubuntu): `sudo apt install pkg-config libdbus-1-dev`,
+plus `bluez` for Bluetooth and `cups` at runtime. Run `make help` for all
+targets (`build`, `test`, `clippy`, `lint`, `run`, …).
 
-Re-plug the USB printer after installing the udev rule.
-
-To uninstall: `sudo make uninstall`.
-
-## Testing
-
-Run the Rust unit and integration tests (all workspace crates, no hardware):
+To run it directly without installing:
 
 ```sh
-cargo test --workspace
+make run                          # cargo run -p supvan-app (add SUPVAN_MOCK=1 for no hardware)
+# index + IPP server at http://localhost:8631/
 ```
 
-End-to-end printing against a real printer is exercised manually via
-`supvan-cli` (see below) or through CUPS ([acceptance checklist](docs/CUPS_ACCEPTANCE.md)).
-IPP golden request fixtures: `tests/fixtures/ipp/` (see `scripts/capture_ipp_golden.sh`).
+## CLI tool
 
-## Usage
-
-### Printer Application
-
-The printer application runs an IPP server with a simple index page on port **8631**.
-It auto-discovers printers via BlueZ D-Bus (Bluetooth) and sysfs (USB HID),
-and registers them as IPP Everywhere printers (`ipp://localhost:8631/ipp/print/<name>`).
-When both transports are available, USB is preferred.
+`supvan-cli` talks to a printer directly (bypassing CUPS) for diagnostics. Pass
+a Bluetooth address or a `/dev/hidrawN` path:
 
 ```sh
-supvan-printer-app                # start server (default 0.0.0.0:8631)
-# Index: http://localhost:8631/
-```
-
-**First-install step** — register the queue with CUPS:
-
-```sh
-lpadmin -p QUEUE -E -v ipp://localhost:8631/ipp/print/PRINTER -m everywhere
-```
-
-You only do this once per install; CUPS persists the queue across reboots.
-
-For automatic discovery (no manual `lpadmin`), enable `cups-browsed`:
-
-```sh
-sudo systemctl enable --now cups-browsed
-```
-
-The app advertises printers over mDNS (`_ipp._tcp.local.`) by default, and
-`cups-browsed` picks them up within ~10 s. Disable mDNS at build time with
-`--no-default-features` on `ipp-printer-app` if you don't want it (e.g. for
-USB-only embedded targets).
-
-#### Systemd User Service
-
-```sh
-systemctl --user daemon-reload
-systemctl --user enable --now supvan-printer-app
-```
-
-The service unit is installed by `make install`. The `ExecStopPost` cleanup
-script removes stale CUPS queues that were auto-created by cups-browsed,
-preventing duplicates across restarts.
-
-### CLI Tool
-
-Direct printer interaction over Bluetooth or USB HID for diagnostics and
-testing. Pass a Bluetooth address or `/dev/hidrawN` path as the target.
-
-```sh
-supvan-cli discover                          # discover nearby printers
-supvan-cli probe AA:BB:CC:DD:EE:FF           # probe over Bluetooth
-supvan-cli probe /dev/hidraw7                # probe over USB HID
-supvan-cli material /dev/hidraw7             # query loaded label info
+supvan-cli discover                          # scan for Supvan Bluetooth devices
+supvan-cli probe AA:BB:CC:DD:EE:FF           # device/status/material/version
+supvan-cli material /dev/hidraw7             # loaded label + RFID + remaining
 supvan-cli test-print /dev/hidraw7 --density 4
 ```
 
-## Environment Variables
+## Testing
 
-| Variable | Description |
-|----------|-------------|
-| `RUST_LOG` | Log level (`debug`, `info`, `warn`, `error`) |
-| `SUPVAN_MODELS` | Override path to `models.toml` |
-| `SUPVAN_DUMP_DIR` | Directory for debug image dumps |
-| `SUPVAN_MOCK` | Set to `1` to run without a real printer |
-| `XDG_STATE_HOME` | Override state file location (default: `~/.local/state`) |
-| `SUPVAN_HOST` | Bind address (default: `0.0.0.0`) |
-| `SUPVAN_PORT` | IPP HTTP port (default: `8631`) |
-| `IPP_PRINTER_APP_POLL_SECS` | Status-poll cadence in seconds (default: `30`) |
-| `SUPVAN_MOCK_DELAY_MS` | Mock transfer delay per page (default: `0`) |
-| `SUPVAN_MOCK_FAIL` | Mock single-shot failure reasons, e.g. `media-empty,cover-open` |
-| `SUPVAN_MOCK_FAIL_REPEAT` | `=1` re-arms `SUPVAN_MOCK_FAIL` after each consumption |
-| `SUPVAN_MOCK_STICKY` | Mock sticky `printer-state-reasons` (same token syntax) |
-| `SUPVAN_MOCK_RECOVER_AFTER_MS` | Sticky reasons auto-clear after N ms |
+```sh
+cargo test --workspace        # unit + integration tests, no hardware
+```
 
-## Testing without burning labels
+A Docker-based end-to-end test boots the app under CUPS + `cups-browsed` +
+avahi and exercises discovery, the registrar/coexistence, PWG-raster and JPEG
+print round-trips, and the status lifecycle — see `ci/run-integration-test.sh`
+(run by GitHub Actions alongside `cargo test`/`clippy`).
 
-Run the printer application with `SUPVAN_MOCK=1` and every page lands as PBM
-under `$XDG_RUNTIME_DIR/supvan-mock/` (or `SUPVAN_DUMP_DIR` if set) with a
-JSON manifest alongside — no bytes reach the device. Inspect the dumps before
-re-running for real. To exercise the IPP error surface end-to-end without a
-physical fault, layer on `SUPVAN_MOCK_FAIL=media-empty,cover-open` (single
-shot) or `SUPVAN_MOCK_STICKY=cover-open SUPVAN_MOCK_RECOVER_AFTER_MS=10000`
-(sticky `printer-state-reasons` that auto-clears after 10 s). Tokens:
+For label-free local testing, run with `SUPVAN_MOCK=1`: every page is written
+as a PBM (plus a JSON manifest) under `$XDG_RUNTIME_DIR/supvan-mock/` (or
+`SUPVAN_DUMP_DIR`) instead of reaching hardware. To exercise the IPP error
+surface without a physical fault, layer on `SUPVAN_MOCK_FAIL=media-empty`
+(single shot) or `SUPVAN_MOCK_STICKY=cover-open SUPVAN_MOCK_RECOVER_AFTER_MS=10000`
+(a sticky `printer-state-reasons` that clears after 10 s). Reason tokens:
 `media-empty`, `label-not-installed`, `media-jam`, `label-rw-error`,
 `label-mode-error`, `ribbon-rw-error`, `ribbon-end`, `media-needed`,
 `cover-open`, `head-temp-high`, `other`.
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `SUPVAN_HOST` | Bind address (default `0.0.0.0`) |
+| `SUPVAN_PORT` | IPP/HTTP port (default `8631`) |
+| `SUPVAN_MODELS` | Override path to `models.toml` (else the embedded copy) |
+| `SUPVAN_MOCK` | `1` runs a synthetic printer (no hardware) |
+| `SUPVAN_DUMP_DIR` | Directory for debug page dumps |
+| `RUST_LOG` | Log level (`debug`, `info`, `warn`, `error`) |
+| `IPP_PRINTER_APP_POLL_SECS` | Status-poll cadence in seconds (default `30`) |
+| `SUPVAN_MOCK_DELAY_MS` | Mock transfer delay per page (default `0`) |
+| `SUPVAN_MOCK_FAIL` | Mock single-shot failure reasons (token list above) |
+| `SUPVAN_MOCK_FAIL_REPEAT` | `1` re-arms `SUPVAN_MOCK_FAIL` after each use |
+| `SUPVAN_MOCK_STICKY` | Mock sticky `printer-state-reasons` (same tokens) |
+| `SUPVAN_MOCK_RECOVER_AFTER_MS` | Sticky reasons auto-clear after N ms |
+
+## Documentation
+
+- [docs/DEPLOY.md](docs/DEPLOY.md) — install, the systemd units, `cups-browsed` coexistence.
+- [docs/CONFORMANCE.md](docs/CONFORMANCE.md) — the IPP Everywhere `ipptool` audit.
+- [docs/CUPS_ACCEPTANCE.md](docs/CUPS_ACCEPTANCE.md) — manual CUPS acceptance walkthrough.
+- [docs/PROTOCOL.md](docs/PROTOCOL.md) — the reverse-engineered Supvan wire protocol.
 
 ## License
 

@@ -1,3 +1,9 @@
+//! `supvan-cli` — a diagnostic tool for talking to a Supvan printer directly,
+//! bypassing the IPP/CUPS stack. Connect over Bluetooth (an address) or USB HID
+//! (a `/dev/hidrawN` path) and run a subcommand: `probe` (device/status/material/
+//! version), `material` (loaded label + RFID + remaining count), `test-print`
+//! (a built-in pattern), or `discover` (scan for Supvan Bluetooth devices).
+
 use clap::{Parser, Subcommand};
 use std::process;
 use supvan_proto::bt_transport::BtTransport;

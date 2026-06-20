@@ -6,7 +6,7 @@ After=bluetooth.target dbus.socket
 Type=simple
 # %h = the user's home. Binary comes from `cargo install` (~/.cargo/bin),
 # the cleanup hook from `make install-user` (~/.local/lib). No root needed.
-ExecStart=%h/.cargo/bin/supvan-printer-app server
+ExecStart=%h/.cargo/bin/supvan-printer-app
 ExecStopPost=%h/.local/lib/supvan-printer-app/cups-cleanup.sh
 Restart=on-failure
 RestartSec=5

@@ -1,4 +1,12 @@
-//! Supvan IPP Everywhere printer application (Rust IPP stack).
+//! Supvan IPP Everywhere printer application.
+//!
+//! Wires the `ipp-printer-app` framework (the IPP/HTTP server + job model) to
+//! the Supvan device layer (`supvan-proto`): discovers USB + Bluetooth printers
+//! and unifies them into one `supvan://` device, decodes incoming jobs
+//! (PWG/CUPS raster or `image/jpeg`) to the printhead bitmap, and drives the
+//! transfer. An in-process registrar auto-creates the direct CUPS queue and
+//! coexists with `cups-browsed` via a matching mDNS `UUID=` key. The binary
+//! takes no arguments; it is configured via `SUPVAN_*` environment variables.
 
 mod battery_provider;
 mod device;
