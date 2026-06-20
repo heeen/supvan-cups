@@ -161,8 +161,7 @@ pub fn create_test_pattern(label_width_mm: u32, height_mm: u32) -> (Vec<u8>, u32
                         }
 
                         // X cross diagonals
-                        if bh > 0 {
-                            let expected_row_1 = (local_col * bw) / bh;
+                        if let Some(expected_row_1) = (local_col * bw).checked_div(bh) {
                             if (lr as i32 - expected_row_1 as i32).unsigned_abs() < 2 {
                                 pixel = true;
                             }

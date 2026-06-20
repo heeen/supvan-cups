@@ -165,7 +165,7 @@ pub fn load() {
             bt_patterns.push((pattern.clone(), idx));
         }
     }
-    bt_patterns.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    bt_patterns.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
 
     if REGISTRY
         .set(Registry {

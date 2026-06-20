@@ -269,6 +269,45 @@ fn fit_luma(
     (canvas, label_w, label_h)
 }
 
+/// Build printer config from a driver family name.
+pub fn config_from_family(
+    name: &str,
+    driver: &str,
+    uri: &str,
+    device_id: &str,
+) -> Option<ipp_printer_app::PrinterConfig> {
+    let family = models::families()
+        .iter()
+        .find(|f| f.driver_name.to_string_lossy() == driver)?;
+    let make = String::from_utf8_lossy(&family.make_and_model).into_owned();
+    let media_names: Vec<String> = family
+        .media_names
+        .iter()
+        .map(|n| n.to_string_lossy().into_owned())
+        .collect();
+    Some(ipp_printer_app::PrinterConfig {
+        name: name.to_string(),
+        driver_name: driver.to_string(),
+        make_and_model: make,
+        device_id: device_id.to_string(),
+        device_uri: uri.to_string(),
+        dpi: family.dpi,
+        printhead_width_dots: family.printhead_width_dots,
+        media_names,
+        media_sizes: family.media_sizes.clone(),
+        darkness: 50,
+        // We accept PWG/CUPS raster (CUPS' driverless path) and decode
+        // image/jpeg ourselves (run_jpeg_job) — the last IPP Everywhere
+        // required format.
+        document_formats: vec![
+            "image/pwg-raster".to_string(),
+            "application/vnd.cups-raster".to_string(),
+            "application/octet-stream".to_string(),
+            "image/jpeg".to_string(),
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,43 +348,4 @@ mod tests {
         assert!(canvas.is_empty());
         assert_eq!((w, h), (0, 0));
     }
-}
-
-/// Build printer config from a driver family name.
-pub fn config_from_family(
-    name: &str,
-    driver: &str,
-    uri: &str,
-    device_id: &str,
-) -> Option<ipp_printer_app::PrinterConfig> {
-    let family = models::families()
-        .iter()
-        .find(|f| f.driver_name.to_string_lossy() == driver)?;
-    let make = String::from_utf8_lossy(&family.make_and_model).into_owned();
-    let media_names: Vec<String> = family
-        .media_names
-        .iter()
-        .map(|n| n.to_string_lossy().into_owned())
-        .collect();
-    Some(ipp_printer_app::PrinterConfig {
-        name: name.to_string(),
-        driver_name: driver.to_string(),
-        make_and_model: make,
-        device_id: device_id.to_string(),
-        device_uri: uri.to_string(),
-        dpi: family.dpi,
-        printhead_width_dots: family.printhead_width_dots,
-        media_names,
-        media_sizes: family.media_sizes.clone(),
-        darkness: 50,
-        // We accept PWG/CUPS raster (CUPS' driverless path) and decode
-        // image/jpeg ourselves (run_jpeg_job) — the last IPP Everywhere
-        // required format.
-        document_formats: vec![
-            "image/pwg-raster".to_string(),
-            "application/vnd.cups-raster".to_string(),
-            "application/octet-stream".to_string(),
-            "image/jpeg".to_string(),
-        ],
-    })
 }
