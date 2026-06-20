@@ -68,7 +68,6 @@ install: $(BINARY) $(BINARY_CLI) ## System-wide install (sudo; DESTDIR/PREFIX aw
 	install -Dm644 data/models.toml                             $(DESTDIR)$(DATADIR)/models.toml
 	install -Dm644 supvan-printer-app.service                   $(DESTDIR)$(UNITDIR)/supvan-printer-app.service
 	install -Dm755 etc/cups-cleanup.sh                          $(DESTDIR)$(LIBDIR)/cups-cleanup.sh
-	install -Dm755 etc/cups-register.sh                         $(DESTDIR)$(LIBDIR)/cups-register.sh
 	install -Dm644 etc/udev/rules.d/70-supvan-t50.rules         $(DESTDIR)$(UDEVDIR)/70-supvan-t50.rules
 	install -Dm644 etc/dbus-1/system.d/com.supvan.battery.conf  $(DESTDIR)$(DBUSDIR)/com.supvan.battery.conf
 
@@ -78,7 +77,6 @@ uninstall: ## Remove a system-wide install
 	rm -f $(DESTDIR)$(DATADIR)/models.toml
 	rm -f $(DESTDIR)$(UNITDIR)/supvan-printer-app.service
 	rm -f $(DESTDIR)$(LIBDIR)/cups-cleanup.sh
-	rm -f $(DESTDIR)$(LIBDIR)/cups-register.sh
 	rm -f $(DESTDIR)$(UDEVDIR)/70-supvan-t50.rules
 	rm -f $(DESTDIR)$(DBUSDIR)/com.supvan.battery.conf
 	-rmdir $(DESTDIR)$(DATADIR) $(DESTDIR)$(LIBDIR) 2>/dev/null
