@@ -303,7 +303,7 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         },
     );
 
-    Server::run(ServerOptions {
+    let server = Server::run(ServerOptions {
         host: host.to_string(),
         port,
         printers: registry,
@@ -313,8 +313,33 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         // The registrar advertises after stamping queue UUIDs; don't let the
         // framework advertise early (it would race with no UUID set).
         advertise_mdns: false,
-    })
-    .await
+    });
+
+    // Clean up our CUPS queues on graceful exit (SIGTERM from systemd, or
+    // Ctrl-C when run by hand) so we don't leave a dead queue behind. Only on
+    // the signal path: if the server future returns on its own (e.g. a bind
+    // error because another instance already owns this port), we must NOT touch
+    // that port's queues — they belong to the running instance. A SIGKILL can't
+    // be caught; ExecStopPost and the next start's orphan sweep cover that.
+    tokio::select! {
+        result = server => result,
+        () = shutdown_signal() => {
+            log::info!("shutdown: removing our CUPS queues on :{port}");
+            crate::registrar::remove_queues(port, &[]);
+            Ok(())
+        }
+    }
+}
+
+/// Resolves when the process receives SIGTERM or SIGINT.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    let mut intr = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = intr.recv() => {}
+    }
 }
 
 /// Drop persisted entries whose URI scheme this build no longer recognises

@@ -58,6 +58,12 @@ fn run(registry: PrinterRegistry, port: u16) {
         }
     }
 
+    // Sweep orphans: queues from a previous run that point at our IPP server on
+    // this port but whose printer name is no longer discovered — e.g. a
+    // model-detection slug change (`…t50m-pro…` → `…t50-series…`), or a queue a
+    // crash / manual run left behind. Keep the current printers' queues.
+    remove_queues(port, &names);
+
     // Advertise now that every record carries its queue's UUID. Leak the
     // handle: the advertiser must outlive this function for the daemon's
     // lifetime, and a daemon exit lets the mDNS TTL expire the records.
@@ -124,6 +130,35 @@ fn ensure_direct_queue(name: &str, port: u16) {
         Ok(s) if s.success() => log::info!("registrar: ensured direct queue {name} -> {uri}"),
         Ok(s) => log::warn!("registrar: lpadmin for {name} exited {s}"),
         Err(e) => log::warn!("registrar: lpadmin for {name} failed to run: {e}"),
+    }
+}
+
+/// CUPS queue names whose device-uri targets our IPP server on `port`
+/// (`ipp://localhost:<port>/ipp/print/...`).
+fn our_queue_names(port: u16) -> Vec<String> {
+    let needle = format!("localhost:{port}/ipp/print/");
+    let Ok(out) = Command::new("lpstat").arg("-v").output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.contains(&needle))
+        // "device for <name>: ipp://localhost:<port>/ipp/print/<name>"
+        .filter_map(|l| l.strip_prefix("device for ")?.split(':').next())
+        .map(|n| n.trim().to_string())
+        .collect()
+}
+
+/// Remove every CUPS queue pointing at our IPP server on `port` whose name is
+/// not in `keep`. Used both to sweep orphans on startup (`keep` = the current
+/// printers) and to clean up on graceful exit (`keep` = empty).
+pub fn remove_queues(port: u16, keep: &[String]) {
+    for q in our_queue_names(port) {
+        if keep.iter().any(|k| k == &q) {
+            continue;
+        }
+        log::info!("registrar: removing stale queue {q}");
+        let _ = Command::new("lpadmin").args(["-x", &q]).status();
     }
 }
 
