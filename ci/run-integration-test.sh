@@ -18,6 +18,8 @@
 #      run_jpeg_job (decode → contain-fit → dither) to a .pbm — proving the
 #      JPEG document-format is honestly decoded, not just advertised.
 #   8. Lifecycle: status polling, recovery, job-error propagation.
+#   9. Queue cleanup: a startup sweep removes orphaned queues, and a graceful
+#      SIGTERM removes our own direct queue — no stale queues left behind.
 set -euo pipefail
 
 PORT="${IPP_PORT:-8631}"
@@ -411,5 +413,54 @@ else
     echo "warn: CUPS-local lpstat didn't include media-empty (backend may proxy state-reasons only after a job, not on query)."
 fi
 
+##############################################################################
+# Queue cleanup: we must not leave stale CUPS queues behind.
+#
+#   1. Startup orphan sweep: a queue pointing at our IPP server whose printer is
+#      no longer present is removed when supvan (re)starts.
+#   2. Graceful-exit cleanup: SIGTERM removes our own direct queue(s) — the
+#      in-process handler (no systemd ExecStopPost in this container).
+##############################################################################
+step "Queue cleanup: startup sweep removes an orphan queue"
+restart_supvan
+for _ in $(seq 1 40); do lpstat -v "$QUEUE" >/dev/null 2>&1 && break; sleep 1; done
+# Plant the orphan while supvan is STOPPED, so only the next start's sweep can
+# clear it (a running instance's exit-cleanup would otherwise grab it first).
+kill "$(cat /run/supvan.pid)" 2>/dev/null || true
+sleep 1
+ORPHAN="supvan-orphan-test"
+lpadmin -p "$ORPHAN" -E -v "ipp://localhost:${PORT}/ipp/print/${ORPHAN}"
+lpstat -v "$ORPHAN" >/dev/null 2>&1 || { echo "FAIL: could not plant orphan queue" >&2; exit 1; }
+echo "planted orphan $ORPHAN -> :${PORT} while supvan stopped"
+restart_supvan
+sleep 3   # registrar ensure + startup sweep
+if lpstat -v "$ORPHAN" >/dev/null 2>&1; then
+    echo "FAIL: startup sweep did not remove orphan queue $ORPHAN" >&2
+    lpstat -v 2>&1 | grep "$ORPHAN" || true
+    exit 1
+fi
+if grep -q "removing stale queue $ORPHAN" /tmp/supvan.log; then
+    echo "startup sweep removed $ORPHAN — OK"
+else
+    echo "orphan $ORPHAN gone after restart — OK (sweep log not captured)"
+fi
+
+step "Queue cleanup: graceful stop (SIGTERM) removes our direct queue"
+lpstat -v "$QUEUE" >/dev/null 2>&1 || { echo "FAIL: $QUEUE missing before stop" >&2; exit 1; }
+kill "$(cat /run/supvan.pid)" 2>/dev/null || true   # SIGTERM → in-process cleanup
+gone=0
+for _ in $(seq 1 20); do
+    if ! lpstat -v 2>/dev/null | grep -q "localhost:${PORT}/ipp/print/"; then
+        gone=1; break
+    fi
+    sleep 0.5
+done
+if (( ! gone )); then
+    echo "FAIL: direct queue(s) to :${PORT} survived graceful stop" >&2
+    lpstat -v 2>&1 | grep "localhost:${PORT}" || true
+    exit 1
+fi
+echo "graceful stop removed our direct queue(s) — OK"
+
 echo
-echo "PASS: discovery + IPP attributes + Print-Job (PWG + JPEG) round-trip + lifecycle succeeded"
+echo "PASS: discovery + IPP attributes + Print-Job (PWG + JPEG) round-trip + lifecycle + queue cleanup succeeded"
