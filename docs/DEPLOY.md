@@ -63,3 +63,14 @@ accumulated duplicates from before this fix (a stale cache), clear them once —
 either restart the service (the startup sweep removes leftover dupes) or
 `sudo systemctl restart cups-browsed` to rebuild its cache. Going forward the
 stable uuid keeps it deduped.
+
+The advert is also restricted to **physical** interfaces (`ipp-printer-app`
+≥ 0.6.1). Previously it published on every interface, so on a host with Docker
+bridges `cups-browsed` resolved us over each `veth*`/`br-*` link; the racy /
+duplicate address answers there made avahi hand it a *null* host name for some
+resolves, which fails its `is_local_hostname()` check, bypasses the `UUID=`
+dedup, and builds a spurious `implicitclass://` cluster. Skipping loopback,
+link-local and container/VM virtual bridges (`veth`, `docker`, `br-`, `virbr`,
+`vnet`, `vmnet`, `vboxnet`) removes those resolves at the source. What remains
+is at most a `printer-is-temporary` on-demand queue CUPS itself spins up from
+the advert — which auto-expires — not a `cups-browsed` duplicate.
