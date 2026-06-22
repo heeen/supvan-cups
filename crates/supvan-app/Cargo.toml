@@ -17,7 +17,7 @@ serde_json = "1"
 toml = "0.8"
 dbus = "0.9"
 dbus-crossroads = "0.5"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 print_raster = "0.1"
 futures = "0.3"

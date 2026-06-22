@@ -1,7 +1,8 @@
 #!/bin/sh
-# SIGKILL safety net (ExecStopPost): remove CUPS queues pointing at our IPP
-# server. The app already cleans up its own queues on graceful exit and sweeps
-# orphans on start; this only matters when the process is killed uncatchably.
+# Remove the CUPS queue(s) pointing at our IPP server. The queue is persistent
+# (kept across restarts so its printer-uuid stays stable for cups-browsed
+# dedup), so this is NOT run on every stop — only on uninstall (`make
+# uninstall*`) or by hand to tear the queue down.
 PORT="${SUPVAN_PORT:-8631}"
 lpstat -v 2>/dev/null \
     | grep "localhost:${PORT}/ipp/print/" \

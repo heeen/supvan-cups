@@ -45,15 +45,21 @@ For a true root-managed service (no login session needed), add an
 ## cups-browsed coexistence
 
 The in-process registrar creates a direct `ipp://localhost:8631/...` queue and
-advertises it over mDNS with `UUID=<queue printer-uuid>`, which cups-browsed
-uses to dedupe (it then ignores our service rather than building a broken
-`implicitclass://` queue). If cups-browsed was already running before the
-service first created its queue, its local-queue cache is stale and it may
-recreate `implicitclass://` duplicates. Rebuild that cache once:
+advertises it over mDNS with `UUID=<queue printer-uuid>`. A co-resident
+`cups-browsed` matches that `UUID=` against the local queue's `printer-uuid`,
+recognises it as a local queue, and stands down — so it never builds a
+duplicate (a broken `implicitclass://` cluster or a numbered `name_N` copy).
 
-```sh
-sudo systemctl restart cups-browsed
-```
+The catch is that the dedup needs a **stable** `printer-uuid`. CUPS assigns a
+fresh random uuid to every newly-*created* queue, so the queue must **persist**
+across restarts: we never delete it on stop, and on start the registrar
+reconciles it in place (`lpadmin -p`, which preserves the uuid). The queue is
+removed only on uninstall (`make uninstall` / `make uninstall-user`). A genuine
+name change (model re-detection) is handled by the registrar's startup sweep,
+which removes the old-named orphan.
 
-After that the duplicates stay gone (the UUID dedup holds across restarts since
-CUPS persists the queue uuid).
+No `cups-browsed` config change is needed. If `cups-browsed` had already
+accumulated duplicates from before this fix (a stale cache), clear them once —
+either restart the service (the startup sweep removes leftover dupes) or
+`sudo systemctl restart cups-browsed` to rebuild its cache. Going forward the
+stable uuid keeps it deduped.

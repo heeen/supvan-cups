@@ -72,6 +72,7 @@ install: $(BINARY) $(BINARY_CLI) ## System-wide install (sudo; DESTDIR/PREFIX aw
 	install -Dm644 etc/dbus-1/system.d/com.supvan.battery.conf  $(DESTDIR)$(DBUSDIR)/com.supvan.battery.conf
 
 uninstall: ## Remove a system-wide install
+	-sh etc/cups-cleanup.sh   # remove the persistent CUPS queue(s)
 	rm -f $(DESTDIR)$(BINDIR)/supvan-printer-app
 	rm -f $(DESTDIR)$(BINDIR)/supvan-cli
 	rm -f $(DESTDIR)$(DATADIR)/models.toml
@@ -96,6 +97,7 @@ deploy: install-user ## install-user, then enable + (re)start the user service
 
 uninstall-user: ## Remove the user install
 	-systemctl --user disable --now supvan-printer-app
+	-sh etc/cups-cleanup.sh   # remove the persistent CUPS queue(s)
 	-$(CARGO) uninstall supvan-app 2>/dev/null
 	rm -f $(USER_UNITDIR)/supvan-printer-app.service
 	rm -f $(USER_LIBDIR)/cups-cleanup.sh

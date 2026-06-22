@@ -150,9 +150,11 @@ fn our_queue_names(port: u16) -> Vec<String> {
 }
 
 /// Remove every CUPS queue pointing at our IPP server on `port` whose name is
-/// not in `keep`. Used both to sweep orphans on startup (`keep` = the current
-/// printers) and to clean up on graceful exit (`keep` = empty).
-pub fn remove_queues(port: u16, keep: &[String]) {
+/// not in `keep` — the startup orphan sweep. `keep` is the set of currently
+/// discovered printers, whose persistent queues we leave in place (preserving
+/// their stable `printer-uuid`). This clears leftovers from a name change or a
+/// cups-browsed duplicate without disturbing the live queues.
+fn remove_queues(port: u16, keep: &[String]) {
     for q in our_queue_names(port) {
         if keep.iter().any(|k| k == &q) {
             continue;

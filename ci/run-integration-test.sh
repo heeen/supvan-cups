@@ -18,8 +18,9 @@
 #      run_jpeg_job (decode → contain-fit → dither) to a .pbm — proving the
 #      JPEG document-format is honestly decoded, not just advertised.
 #   8. Lifecycle: status polling, recovery, job-error propagation.
-#   9. Queue cleanup: a startup sweep removes orphaned queues, and a graceful
-#      SIGTERM removes our own direct queue — no stale queues left behind.
+#   9. Queue lifecycle: a startup sweep removes orphaned queues, and our queue
+#      persists across restarts with a stable printer-uuid (so cups-browsed
+#      dedups it instead of duplicating).
 set -euo pipefail
 
 PORT="${IPP_PORT:-8631}"
@@ -414,12 +415,14 @@ else
 fi
 
 ##############################################################################
-# Queue cleanup: we must not leave stale CUPS queues behind.
+# Queue lifecycle: no stale queues, and a stable identity.
 #
 #   1. Startup orphan sweep: a queue pointing at our IPP server whose printer is
 #      no longer present is removed when supvan (re)starts.
-#   2. Graceful-exit cleanup: SIGTERM removes our own direct queue(s) — the
-#      in-process handler (no systemd ExecStopPost in this container).
+#   2. Persistence: our queue survives a restart with the SAME printer-uuid. A
+#      stable uuid is what lets cups-browsed recognise it as a local queue and
+#      stand down; deleting+recreating it would churn the uuid and trigger
+#      duplicate queues.
 ##############################################################################
 step "Queue cleanup: startup sweep removes an orphan queue"
 restart_supvan
@@ -445,22 +448,25 @@ else
     echo "orphan $ORPHAN gone after restart — OK (sweep log not captured)"
 fi
 
-step "Queue cleanup: graceful stop (SIGTERM) removes our direct queue"
-lpstat -v "$QUEUE" >/dev/null 2>&1 || { echo "FAIL: $QUEUE missing before stop" >&2; exit 1; }
-kill "$(cat /run/supvan.pid)" 2>/dev/null || true   # SIGTERM → in-process cleanup
-gone=0
-for _ in $(seq 1 20); do
-    if ! lpstat -v 2>/dev/null | grep -q "localhost:${PORT}/ipp/print/"; then
-        gone=1; break
-    fi
-    sleep 0.5
-done
-if (( ! gone )); then
-    echo "FAIL: direct queue(s) to :${PORT} survived graceful stop" >&2
-    lpstat -v 2>&1 | grep "localhost:${PORT}" || true
+step "Queue lifecycle: queue persists with a stable printer-uuid across restart"
+lpstat -v "$QUEUE" >/dev/null 2>&1 || { echo "FAIL: $QUEUE missing before restart" >&2; exit 1; }
+u1=$(ipptool -tv "ipp://localhost:631/printers/${QUEUE}" /tmp/gpa.test 2>/dev/null \
+    | grep -i printer-uuid | grep -oE '[0-9a-f-]{36}' | head -1)
+echo "printer-uuid before restart: ${u1:-<unreadable>}"
+restart_supvan   # SIGTERM (no deletion) + restart; registrar reconciles in place
+for _ in $(seq 1 40); do lpstat -v "$QUEUE" >/dev/null 2>&1 && break; sleep 1; done
+if ! lpstat -v "$QUEUE" >/dev/null 2>&1; then
+    echo "FAIL: queue $QUEUE did not survive the restart (should be persistent)" >&2
     exit 1
 fi
-echo "graceful stop removed our direct queue(s) — OK"
+u2=$(ipptool -tv "ipp://localhost:631/printers/${QUEUE}" /tmp/gpa.test 2>/dev/null \
+    | grep -i printer-uuid | grep -oE '[0-9a-f-]{36}' | head -1)
+echo "printer-uuid after  restart: ${u2:-<unreadable>}"
+if [[ -n "$u1" && -n "$u2" && "$u1" != "$u2" ]]; then
+    echo "FAIL: printer-uuid changed across restart ($u1 -> $u2) — defeats cups-browsed dedup" >&2
+    exit 1
+fi
+echo "queue persisted with a stable printer-uuid across restart — OK"
 
 echo
 echo "PASS: discovery + IPP attributes + Print-Job (PWG + JPEG) round-trip + lifecycle + queue cleanup succeeded"

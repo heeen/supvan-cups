@@ -78,9 +78,10 @@ server passes the suite 32/0.
 
 ## 5. Cleanup
 
-Normally nothing to do: the service's `ExecStopPost` (`cups-cleanup.sh`) removes
-the auto-created queue on stop. To remove a queue you created by hand with the
-manual `lpadmin` fallback above:
+The auto-created queue is **persistent** — it's deliberately kept across
+restarts so its `printer-uuid` stays stable (see
+[DEPLOY.md](DEPLOY.md#cups-browsed-coexistence)). It's removed on uninstall
+(`make uninstall` / `make uninstall-user`), or by hand:
 
 ```sh
 sudo lpadmin -x "$PRINTER"
