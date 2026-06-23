@@ -25,7 +25,7 @@ BINARY      := target/release/supvan-printer-app
 BINARY_CLI  := target/release/supvan-cli
 
 .PHONY: all build debug check test fmt fmt-check clippy lint clean run \
-        install uninstall install-user deploy uninstall-user help
+        install uninstall install-user deploy uninstall-user check-browsed help
 
 all: build ## Build the release binaries (default)
 
@@ -67,6 +67,7 @@ install: $(BINARY) $(BINARY_CLI) ## System-wide install (sudo; DESTDIR/PREFIX aw
 	install -Dm644 supvan-printer-app.service                   $(DESTDIR)$(UNITDIR)/supvan-printer-app.service
 	install -Dm644 etc/udev/rules.d/70-supvan-t50.rules         $(DESTDIR)$(UDEVDIR)/70-supvan-t50.rules
 	install -Dm644 etc/dbus-1/system.d/com.supvan.battery.conf  $(DESTDIR)$(DBUSDIR)/com.supvan.battery.conf
+	@sh etc/check-cups-browsed.sh
 
 uninstall: ## Remove a system-wide install
 	rm -f $(DESTDIR)$(BINDIR)/supvan-printer-app
@@ -88,6 +89,10 @@ deploy: install-user ## install-user, then enable + (re)start the user service
 	systemctl --user enable supvan-printer-app
 	systemctl --user restart supvan-printer-app
 	@systemctl --user --no-pager is-active supvan-printer-app
+	@sh etc/check-cups-browsed.sh
+
+check-browsed: ## Warn if cups-browsed needs OnlyUnsupportedByCUPS to coexist
+	@sh etc/check-cups-browsed.sh
 
 uninstall-user: ## Remove the user install
 	-systemctl --user disable --now supvan-printer-app

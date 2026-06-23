@@ -86,6 +86,10 @@ entirely (it skips `printer-is-temporary` destinations) and builds its own
 broken `implicitclass://` duplicate. If you can't change `cups-browsed.conf`,
 the alternative is to stop it (`systemctl disable --now cups-browsed`).
 
+`make deploy` / `make install` detect this exact case — cups-browsed running
+without the directive — and print the one-line fix (it never edits system
+config). Run the check any time with `make check-browsed`.
+
 The advert is restricted to **physical** interfaces (`ipp-printer-app` ≥ 0.6.1):
 on a host with Docker/VM bridges, advertising over every `veth*`/`br-*` link
 made avahi hand `cups-browsed` a *null* host name for some resolves, multiplying
