@@ -349,13 +349,20 @@ rm -rf "$DUMP_DIR" && mkdir -p "$DUMP_DIR"
 restart_supvan SUPVAN_MOCK_FAIL=media-jam IPP_PRINTER_APP_RETRY_MS=300
 job_id=$(submit_pwg_job)
 echo "submitted job into a jam: id=$job_id"
-if ! wait_pbm 20; then
-    echo "FAIL: jammed job never printed (should hold + retry, not abort)" >&2
-    tail -20 /tmp/supvan.log; exit 1
-fi
-jam_state=$(job_state "$job_id")
+# The mock's jam fails *after* dumping a page (a mid-feed jam), so a .pbm is not
+# proof of success — wait for the job itself to COMPLETE on a retry (the jam is
+# single-shot, so the next attempt prints). It must not abort.
+jam_state=""
+for _ in $(seq 1 40); do
+    jam_state=$(job_state "$job_id")
+    case "$jam_state" in completed|aborted|canceled) break;; esac
+    sleep 0.5
+done
 echo "job-state after the jam cleared: ${jam_state:-<none>} (expect completed)"
-[[ "$jam_state" == "completed" ]] || { echo "FAIL: jammed job did not complete (state=$jam_state)" >&2; exit 1; }
+[[ "$jam_state" == "completed" ]] || {
+    echo "FAIL: jammed job did not complete (state=$jam_state) — should hold + retry, not abort" >&2
+    tail -20 /tmp/supvan.log; exit 1
+}
 echo "jammed job held + printed on retry — OK"
 
 step "Permanent failure aborts the job (no retry)"
