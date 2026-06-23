@@ -9,8 +9,10 @@ IPP-Everywhere client — can print to driverlessly over USB or Bluetooth.
   32/0 (see [docs/CONFORMANCE.md](docs/CONFORMANCE.md)).
 - **Formats**: PWG/CUPS raster and `image/jpeg` (decoded in-process).
 - **USB + Bluetooth**, unified into one logical printer per device.
-- **Coexists with `cups-browsed`** — auto-creates a direct CUPS queue and
-  dedupes its own mDNS advert by UUID, no manual `lpadmin`.
+- **CUPS-managed** — a self-contained IPP Everywhere service: it advertises over
+  DNS-SD and CUPS makes an on-demand queue (no queue to install or manage).
+- **Holds jobs when the device is offline** (or jammed) and prints them on
+  recovery, instead of dropping them; drops out of print dialogs when off.
 
 Built on [`ipp-printer-app`](https://crates.io/crates/ipp-printer-app), this
 project's own generic IPP-Everywhere framework. The printer protocol was
@@ -54,12 +56,14 @@ mock://  ───┘    (mock://ID)        │  └─ image/jpeg ─► run_jp
   contain-fit onto the loaded label → dither) or `run_cups_raster_job`
   (PWG/CUPS raster), both feeding the `supvan-proto` pack → LZMA → transfer
   pipeline.
-- An in-process **registrar** creates the direct
-  `ipp://localhost:8631/ipp/print/<name>` CUPS queue, reads back its
-  `printer-uuid`, and advertises that UUID over mDNS so a co-resident
-  `cups-browsed` dedupes instead of building a broken `implicitclass://` queue.
+- We advertise over **DNS-SD** and let CUPS create a temporary on-demand queue
+  (the AirPrint model) — no queue of our own. A co-resident `cups-browsed`
+  should run with `OnlyUnsupportedByCUPS Yes` so it defers to CUPS rather than
+  building a duplicate `implicitclass://` queue (see [docs/DEPLOY.md](docs/DEPLOY.md)).
 - A **status poller** surfaces the loaded roll (`media-ready` / `media-col-ready`),
-  a labels-remaining supply gauge (`printer-supply`), and error reasons.
+  a labels-remaining supply gauge (`printer-supply`), and error reasons — and
+  drives the offline/jam behavior: when the device can't print, jobs are held
+  and retried, the printer reports `stopped`, and its advert is withdrawn.
 
 ## Workspace layout
 
@@ -69,13 +73,13 @@ mock://  ───┘    (mock://ID)        │  └─ image/jpeg ─► run_jp
 | `crates/supvan-app` | The printer application binary `supvan-printer-app`. |
 | `crates/supvan-cli` | The `supvan-cli` diagnostic tool. |
 
-The IPP/HTTP layer is the external crate **`ipp-printer-app`** (`= "0.6"`, on
+The IPP/HTTP layer is the external crate **`ipp-printer-app`** (`= "0.7"`, on
 crates.io) — this repo's own device-agnostic framework, not a workspace member.
 
 ## Install & run
 
-The app needs no privileges (unprivileged port 8631, `lpadmin` as your user),
-so the default is a **user-scoped** install — no sudo:
+The app needs no privileges (unprivileged port 8631; it owns no CUPS queue), so
+the default is a **user-scoped** install — no sudo:
 
 ```sh
 make deploy      # cargo install → ~/.cargo/bin + a user systemd unit, then start
@@ -116,8 +120,9 @@ cargo test --workspace        # unit + integration tests, no hardware
 ```
 
 A Docker-based end-to-end test boots the app under CUPS + `cups-browsed` +
-avahi and exercises discovery, the registrar/coexistence, PWG-raster and JPEG
-print round-trips, and the status lifecycle — see `ci/run-integration-test.sh`
+avahi and exercises discovery, `cups-browsed` coexistence, PWG-raster and JPEG
+print round-trips, offline/jam hold-and-retry, and the status lifecycle — see
+`ci/run-integration-test.sh`
 (run by GitHub Actions alongside `cargo test`/`clippy`).
 
 For label-free local testing, run with `SUPVAN_MOCK=1`: every page is written

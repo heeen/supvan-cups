@@ -1,6 +1,10 @@
-# CI image: builds supvan-printer-app and runs it under CUPS + cups-browsed +
-# avahi-daemon in mock mode, then runs an integration test that exercises CUPS
-# discovery + a print round-trip into a dump directory.
+# CI image: builds supvan-printer-app and runs it under cupsd + cups-browsed +
+# avahi-daemon in mock mode, then runs an integration test exercising DNS-SD
+# discovery, print round-trips, the offline/jam hold-and-retry behavior, and
+# cups-browsed COEXISTENCE. cups-browsed runs with `OnlyUnsupportedByCUPS Yes`
+# (written below) — the forward-facing config in which cupsd handles driverless
+# IPP Everywhere printers (us) and cups-browsed defers, so it does NOT build a
+# duplicate implicitclass:// queue. The integration test asserts that.
 
 # -------- build stage --------
 FROM rust:1-bookworm AS build
@@ -51,6 +55,11 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/run-integration-
 # CUPS in a Linux container often lacks IPv6 ::1; force IPv4-only listen.
 RUN sed -i 's|^Listen localhost:631|Listen 127.0.0.1:631|' /etc/cups/cupsd.conf \
     && mkdir -p /run/cups /run/dbus
+
+# Make cups-browsed defer driverless printers (us) to cupsd's own temporary
+# queues instead of building a duplicate implicitclass:// queue. This is the
+# recommended coexistence config; the integration test verifies it holds.
+RUN echo 'OnlyUnsupportedByCUPS Yes' >> /etc/cups/cups-browsed.conf
 
 ENV SUPVAN_MOCK=1 \
     SUPVAN_MODELS=/usr/local/share/supvan-printer-app/models.toml \

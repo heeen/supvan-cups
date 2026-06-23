@@ -19,7 +19,6 @@ mod job;
 mod mock;
 mod models;
 mod printer_device;
-mod registrar;
 mod usb_discover;
 mod util;
 

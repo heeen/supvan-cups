@@ -11,7 +11,6 @@ CARGO ?= cargo
 # --- System install layout (GNU/FHS; override PREFIX or DESTDIR) ------------
 PREFIX   ?= /usr
 BINDIR   ?= $(PREFIX)/bin
-LIBDIR   ?= $(PREFIX)/lib/supvan-printer-app
 DATADIR  ?= $(PREFIX)/share/supvan-printer-app
 UNITDIR  ?= $(PREFIX)/lib/systemd/user
 UDEVDIR  ?= $(PREFIX)/lib/udev/rules.d
@@ -21,7 +20,6 @@ DBUSDIR  ?= /etc/dbus-1/system.d
 APP_CRATE    := crates/supvan-app
 CARGO_BIN    := $(HOME)/.cargo/bin
 USER_UNITDIR := $(HOME)/.config/systemd/user
-USER_LIBDIR  := $(HOME)/.local/lib/supvan-printer-app
 
 BINARY      := target/release/supvan-printer-app
 BINARY_CLI  := target/release/supvan-cli
@@ -67,25 +65,21 @@ install: $(BINARY) $(BINARY_CLI) ## System-wide install (sudo; DESTDIR/PREFIX aw
 	install -Dm755 $(BINARY_CLI)                                $(DESTDIR)$(BINDIR)/supvan-cli
 	install -Dm644 data/models.toml                             $(DESTDIR)$(DATADIR)/models.toml
 	install -Dm644 supvan-printer-app.service                   $(DESTDIR)$(UNITDIR)/supvan-printer-app.service
-	install -Dm755 etc/cups-cleanup.sh                          $(DESTDIR)$(LIBDIR)/cups-cleanup.sh
 	install -Dm644 etc/udev/rules.d/70-supvan-t50.rules         $(DESTDIR)$(UDEVDIR)/70-supvan-t50.rules
 	install -Dm644 etc/dbus-1/system.d/com.supvan.battery.conf  $(DESTDIR)$(DBUSDIR)/com.supvan.battery.conf
 
 uninstall: ## Remove a system-wide install
-	-sh etc/cups-cleanup.sh   # remove the persistent CUPS queue(s)
 	rm -f $(DESTDIR)$(BINDIR)/supvan-printer-app
 	rm -f $(DESTDIR)$(BINDIR)/supvan-cli
 	rm -f $(DESTDIR)$(DATADIR)/models.toml
 	rm -f $(DESTDIR)$(UNITDIR)/supvan-printer-app.service
-	rm -f $(DESTDIR)$(LIBDIR)/cups-cleanup.sh
 	rm -f $(DESTDIR)$(UDEVDIR)/70-supvan-t50.rules
 	rm -f $(DESTDIR)$(DBUSDIR)/com.supvan.battery.conf
-	-rmdir $(DESTDIR)$(DATADIR) $(DESTDIR)$(LIBDIR) 2>/dev/null
+	-rmdir $(DESTDIR)$(DATADIR) 2>/dev/null
 
 # --- User install (no privileges) ------------------------------------------
 install-user: ## Install binary + user service into $HOME (no sudo)
 	$(CARGO) install --path $(APP_CRATE) --force
-	install -Dm755 etc/cups-cleanup.sh $(USER_LIBDIR)/cups-cleanup.sh
 	install -Dm644 etc/supvan-printer-app.user.service \
 		$(USER_UNITDIR)/supvan-printer-app.service
 	systemctl --user daemon-reload
@@ -97,11 +91,8 @@ deploy: install-user ## install-user, then enable + (re)start the user service
 
 uninstall-user: ## Remove the user install
 	-systemctl --user disable --now supvan-printer-app
-	-sh etc/cups-cleanup.sh   # remove the persistent CUPS queue(s)
 	-$(CARGO) uninstall supvan-app 2>/dev/null
 	rm -f $(USER_UNITDIR)/supvan-printer-app.service
-	rm -f $(USER_LIBDIR)/cups-cleanup.sh
-	-rmdir $(USER_LIBDIR) 2>/dev/null
 	systemctl --user daemon-reload
 
 help: ## List targets

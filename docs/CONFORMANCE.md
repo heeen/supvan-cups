@@ -74,9 +74,9 @@ loaded-label mm into `run_jpeg_job` (it uses the configured default size today).
 Re-run `ipp-everywhere.test` after attribute/format changes; track the pass
 delta.
 
-Note: under `SUPVAN_MOCK=1` the registrar logs an `lpadmin -m everywhere` PPD
-warning. This is a mock-only quirk — the mock's synthetic label dimensions
-don't resolve to a standard PWG size, so CUPS's PPD generator bails. Real
-hardware advertises resolvable sizes and is unaffected; the integration test
-still passes because the registrar's queue is created before the mock's roll
-empties.
+Note: under `SUPVAN_MOCK=1`, building an everywhere queue (`lpadmin -m
+everywhere`, e.g. when pinning a permanent queue) logs a PPD warning. This is a
+mock-only quirk — the mock's synthetic label dimensions don't resolve to a
+standard PWG size, so CUPS's PPD generator bails. Real hardware advertises
+resolvable sizes and is unaffected, and IPP Everywhere conformance (which uses
+the IPP attributes directly, not the PPD) is unaffected either way.

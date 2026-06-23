@@ -158,6 +158,7 @@ fn job_record(
 ) -> ipp_printer_app::PrinterRecord {
     ipp_printer_app::PrinterRecord::new(ipp_printer_app::PrinterConfig {
         name: printer_name.to_string(),
+        display_name: String::new(),
         driver_name: driver_name.to_string(),
         make_and_model: String::new(),
         device_id: String::new(),
@@ -272,6 +273,7 @@ fn fit_luma(
 /// Build printer config from a driver family name.
 pub fn config_from_family(
     name: &str,
+    info: &str,
     driver: &str,
     uri: &str,
     device_id: &str,
@@ -287,6 +289,9 @@ pub fn config_from_family(
         .collect();
     Some(ipp_printer_app::PrinterConfig {
         name: name.to_string(),
+        // Human-readable label the backend built ("Supvan T50 Series <serial>")
+        // — surfaced as the DNS-SD instance name, printer-info, and web UI.
+        display_name: info.to_string(),
         driver_name: driver.to_string(),
         make_and_model: make,
         device_id: device_id.to_string(),

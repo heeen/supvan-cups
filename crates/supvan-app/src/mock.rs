@@ -8,7 +8,8 @@
 //! | `SUPVAN_MOCK_FAIL` | comma-separated reason tokens; fail the *next* print |
 //! | `SUPVAN_MOCK_FAIL_REPEAT=1` | re-arm the single-shot fail after consumption |
 //! | `SUPVAN_MOCK_STICKY` | comma-separated reason tokens for `printer-state-reasons` |
-//! | `SUPVAN_MOCK_RECOVER_AFTER_MS` | sticky reasons auto-clear after N ms from server start |
+//! | `SUPVAN_MOCK_UNREACHABLE=1` | the device can't be opened (simulates powered-off / unplugged): `poll_status` reports OFFLINE and jobs are held |
+//! | `SUPVAN_MOCK_RECOVER_AFTER_MS` | sticky reasons AND unreachability auto-clear after N ms from server start |
 //!
 //! Tokens (parser is case-insensitive on the hyphenated form):
 //! `media-empty`, `label-not-installed`, `media-jam`, `label-rw-error`,
@@ -45,6 +46,9 @@ pub struct MockController {
     next_fail: Mutex<Option<ParsedStatus>>,
     sticky_reasons: PrinterReason,
     sticky_until: Option<Instant>,
+    /// When true the device can't be opened at all (simulates powered-off /
+    /// unplugged hardware), until `sticky_until` elapses.
+    unreachable: bool,
 }
 
 pub fn controller() -> &'static MockController {
@@ -60,6 +64,7 @@ impl MockController {
             std::env::var("SUPVAN_MOCK_FAIL").ok().as_deref(),
             std::env::var("SUPVAN_MOCK_STICKY").ok().as_deref(),
             std::env::var("SUPVAN_MOCK_RECOVER_AFTER_MS").ok().as_deref(),
+            std::env::var("SUPVAN_MOCK_UNREACHABLE").ok().as_deref(),
             Instant::now(),
         )
     }
@@ -70,6 +75,7 @@ impl MockController {
         fail_tokens: Option<&str>,
         sticky_tokens: Option<&str>,
         recover_ms: Option<&str>,
+        unreachable: Option<&str>,
         started_at: Instant,
     ) -> Self {
         let delay = delay_ms
@@ -95,7 +101,20 @@ impl MockController {
             fail_template,
             sticky_reasons: sticky.reasons,
             sticky_until,
+            unreachable: unreachable == Some("1"),
         }
+    }
+
+    /// True once `SUPVAN_MOCK_RECOVER_AFTER_MS` has elapsed (clears sticky
+    /// reasons and unreachability).
+    fn past_recover_deadline(&self) -> bool {
+        matches!(self.sticky_until, Some(d) if Instant::now() >= d)
+    }
+
+    /// Whether the mock device should refuse to open (powered-off simulation).
+    /// Auto-clears at the recover deadline.
+    pub fn is_unreachable(&self) -> bool {
+        self.unreachable && !self.past_recover_deadline()
     }
 
     pub fn delay(&self) -> Duration {
@@ -117,10 +136,8 @@ impl MockController {
     /// Sticky `printer-state-reasons`, surfaced by `KsDevice::status`.
     /// Returns `empty()` once `SUPVAN_MOCK_RECOVER_AFTER_MS` has elapsed.
     pub fn current_reasons(&self) -> PrinterReason {
-        if let Some(deadline) = self.sticky_until {
-            if Instant::now() >= deadline {
-                return PrinterReason::empty();
-            }
+        if self.past_recover_deadline() {
+            return PrinterReason::empty();
         }
         self.sticky_reasons
     }
@@ -184,7 +201,7 @@ mod tests {
         sticky: Option<&str>,
         recover_ms: Option<&str>,
     ) -> MockController {
-        MockController::new(None, repeat, fail, sticky, recover_ms, Instant::now())
+        MockController::new(None, repeat, fail, sticky, recover_ms, None, Instant::now())
     }
 
     #[test]
@@ -246,5 +263,23 @@ mod tests {
         let c = ctrl(None, None, None, None);
         assert!(c.take_print_failure().is_none());
         assert!(c.current_reasons().is_empty());
+        assert!(!c.is_unreachable());
+    }
+
+    #[test]
+    fn unreachable_until_recovery() {
+        // Unreachable, recovering after 1ms.
+        let c = MockController::new(None, None, None, None, Some("1"), Some("1"), Instant::now());
+        assert!(c.is_unreachable(), "device should start unreachable");
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!c.is_unreachable(), "device should recover after the deadline");
+    }
+
+    #[test]
+    fn unreachable_without_recovery_persists() {
+        let c = MockController::new(None, None, None, None, None, Some("1"), Instant::now());
+        assert!(c.is_unreachable());
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(c.is_unreachable());
     }
 }

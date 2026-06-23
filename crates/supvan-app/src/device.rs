@@ -108,6 +108,12 @@ pub fn open_bt(uri: &str) -> Option<Box<KsDevice>> {
 /// Open `mock://ID`. Always succeeds with a no-connection KsDevice driven by
 /// the [`crate::mock`] controller. Only registered when `SUPVAN_MOCK=1`.
 pub fn open_mock(_uri: &str) -> Option<KsDevice> {
+    // Simulate powered-off / unplugged hardware: the device can't be opened,
+    // so poll_status reports OFFLINE and the print path holds the job.
+    if crate::mock::controller().is_unreachable() {
+        log::info!("mock: device unreachable (SUPVAN_MOCK_UNREACHABLE)");
+        return None;
+    }
     Some(KsDevice::open_mock())
 }
 

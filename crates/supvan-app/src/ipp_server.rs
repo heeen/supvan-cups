@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use parking_lot::RwLock;
 use ipp_printer_app::{
-    default_state_path, DeviceBackend, JobContext, JobFailure, PollStatus, PrinterConfig,
-    PrinterReason, PrinterRegistry, ReadyMedia, Server, ServerOptions,
+    default_state_path, DeviceBackend, JobContext, JobFailure, JobOutcome, PollStatus,
+    PrinterConfig, PrinterReason, PrinterRegistry, ReadyMedia, Server, ServerOptions,
 };
 
 use crate::discover::BtCandidate;
@@ -136,7 +136,17 @@ impl DeviceBackend for SupvanDeviceBackend {
             crate::device::open_mock(&config.device_uri)
         } else {
             return None;
-        }?;
+        };
+        let Some(dev) = dev else {
+            // Device unreachable (powered off / unplugged / BT down). Report
+            // OFFLINE so the framework marks us printer-state=stopped and CUPS
+            // holds queued jobs until it's back — instead of accepting a job
+            // we can't print and dropping it.
+            return Some(PollStatus {
+                reasons: PrinterReason::OFFLINE,
+                ..Default::default()
+            });
+        };
 
         let mut reasons = dev.status();
         let mut ready_media = None;
@@ -254,31 +264,24 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
     prune_stale_supvan(&registry);
     Server::persist(&registry, &state_path);
 
-    // Coordinate CUPS queue creation + mDNS advertising: the registrar waits
-    // for the server to bind, ensures one direct ipp:// queue per printer,
-    // stamps each record's UUID from the queue's printer-uuid, then advertises
-    // with that UUID so a co-resident cups-browsed dedupes us instead of
-    // creating a broken implicitclass queue. mDNS is therefore advertised by
-    // the registrar, NOT by Server::run (advertise_mdns: false below).
-    crate::registrar::spawn(registry.clone(), port);
-
     let registry_print = registry.clone();
     let print_job = Arc::new(
-        move |ctx: JobContext, raster: Vec<u8>, copies: u32| -> Result<(), JobFailure> {
+        move |ctx: JobContext, raster: &[u8], copies: u32| -> JobOutcome {
             let cfg = {
                 let guard = registry_print.read();
-                guard
-                    .iter()
-                    .find(|p| p.config.name == ctx.printer_name)
-                    .ok_or_else(|| {
-                        JobFailure::other(format!("printer not found: {}", ctx.printer_name))
-                    })?
-                    .config
-                    .clone()
+                match guard.iter().find(|p| p.config.name == ctx.printer_name) {
+                    Some(p) => p.config.clone(),
+                    None => {
+                        return JobOutcome::Failed(JobFailure::other(format!(
+                            "printer not found: {}",
+                            ctx.printer_name
+                        )))
+                    }
+                }
             };
             // image/jpeg is decoded in-process (run_jpeg_job); everything else
             // is CUPS/PWG raster (CUPS' driverless path already rasterizes).
-            if ctx.document_format == "image/jpeg" {
+            let result = if ctx.document_format == "image/jpeg" {
                 let media_size = cfg.media_sizes.first().copied().unwrap_or([4000, 3000]);
                 crate::ipp_job::run_jpeg_job(
                     &cfg.name,
@@ -286,7 +289,7 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                     cfg.darkness,
                     cfg.printhead_width_dots,
                     media_size,
-                    &raster,
+                    raster,
                     copies,
                 )
             } else {
@@ -296,21 +299,32 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                     cfg.darkness,
                     cfg.printhead_width_dots,
                     &cfg.driver_name,
-                    &raster,
+                    raster,
                     copies,
                 )
+            };
+            match result {
+                Ok(()) => JobOutcome::Completed,
+                // A clearable physical condition — printer off / BT down, paper
+                // jam, out of labels, cover open — should HOLD the job and let
+                // the framework retry until it's resolved, not drop it (the way
+                // a real printer holds a job through a jam). Anything else is a
+                // permanent failure for this document.
+                Err(f) if f.printer_reasons.is_recoverable() => {
+                    JobOutcome::DeviceUnavailable { reasons: f.printer_reasons }
+                }
+                Err(f) => JobOutcome::Failed(f),
             }
         },
     );
 
-    // The CUPS queue is persistent: we do NOT delete it on exit. Deleting +
-    // recreating it across restarts gave the queue a fresh CUPS-assigned
-    // `printer-uuid` each time, which defeats cups-browsed's UUID dedup (it
-    // caches the old uuid and creates a duplicate queue during the restart
-    // race). Leaving the queue in place keeps the uuid stable, so cups-browsed
-    // reliably recognises it as a local queue and stands down. Orphans from a
-    // genuine name change are handled by the registrar's startup sweep; the
-    // queue is removed on uninstall (`make uninstall*`).
+    // CUPS-managed-queue model (IPP Everywhere / Printer Application): we do
+    // NOT create or own a CUPS queue. We are a self-contained IPP Everywhere
+    // server that advertises over DNS-SD; CUPS discovers us and spins up a
+    // temporary on-demand queue (auto-removed when idle), exactly as it does
+    // for an AirPrint printer. This requires `cups-browsed` to be off — it
+    // would otherwise build a broken same-host `implicitclass://` queue from
+    // our advert (it's legacy; modern cupsd does driverless natively).
     Server::run(ServerOptions {
         host: host.to_string(),
         port,
@@ -318,9 +332,9 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         device_backend: backend,
         print_job,
         state_path,
-        // The registrar advertises after stamping queue UUIDs; don't let the
-        // framework advertise early (it would race with no UUID set).
-        advertise_mdns: false,
+        // Advertise the DNS-SD service directly at bind time. No queue UUID to
+        // stamp (we own no queue), so there's nothing to coordinate first.
+        advertise_mdns: true,
     })
     .await
 }

@@ -1,8 +1,10 @@
 # Deploying supvan-printer-app
 
 The app runs as a **user** systemd service. The binary needs no privileges: it
-binds `0.0.0.0:8631` (unprivileged), drives `lpadmin` as your user, and embeds
-`models.toml` (so it's self-contained). Prefer the user-scoped install; a
+binds `0.0.0.0:8631` (unprivileged) and embeds `models.toml` (so it's
+self-contained). It is a **self-contained IPP Everywhere printer** — it
+advertises itself over DNS-SD and lets CUPS create an on-demand queue; it does
+not create or manage any CUPS queue itself. Prefer the user-scoped install; a
 system option is below.
 
 ## User-scoped (default, no sudo)
@@ -17,14 +19,19 @@ and the cleanup hook under `~/.local/lib`, `daemon-reload`s, and enables +
 (re)starts the service. Re-run it after any code change. `make uninstall-user`
 reverses it.
 
-Verify:
+Verify (the app serves IPP directly; there is no standing CUPS queue — the
+printer is discovered over DNS-SD and CUPS spins up a temporary queue on use):
 
 ```sh
 systemctl --user is-active supvan-printer-app
-lpstat -v | grep supvan                 # direct ipp://localhost:8631 queue(s)
-ipptool -tv ipp://localhost:8631/ipp/print/<queue> \
+avahi-browse -rt _ipp._tcp | grep -i supvan          # discoverable over DNS-SD
+ipptool -tv ipp://localhost:8631/ipp/print/<name> \
     /usr/share/cups/ipptool/get-printer-attributes.test | grep document-format
 ```
+
+The `<name>` is the logical printer name (lowercase, e.g. `supvan_t50_series_<serial>`);
+the web index at `http://localhost:8631/` lists each printer's display name and
+logical name.
 
 ## System option (sudo, FHS)
 
@@ -42,35 +49,56 @@ For a true root-managed service (no login session needed), add an
 `/etc/systemd/system/supvan-printer-app.service` with the same `ExecStart` and
 `systemctl enable --now` it — but note discovery uses your session's BlueZ/Avahi.
 
+## How printing works (CUPS-managed queue)
+
+We're a self-contained IPP Everywhere service. When you print, CUPS discovers us
+over DNS-SD and creates a **temporary on-demand queue** (`printer-is-temporary`,
+auto-removed when idle) — exactly the AirPrint path. The printer is always
+visible in print dialogs while the service runs; there's no standing queue to
+manage. To pin a permanent queue by hand if you ever want one:
+
+```sh
+lpadmin -p supvan -E -v "ipp://localhost:8631/ipp/print/<name>" -m everywhere
+```
+
 ## cups-browsed coexistence
 
-The in-process registrar creates a direct `ipp://localhost:8631/...` queue and
-advertises it over mDNS with `UUID=<queue printer-uuid>`. A co-resident
-`cups-browsed` matches that `UUID=` against the local queue's `printer-uuid`,
-recognises it as a local queue, and stands down — so it never builds a
-duplicate (a broken `implicitclass://` cluster or a numbered `name_N` copy).
+`cups-browsed` is the legacy daemon that turns DNS-SD adverts into local CUPS
+queues. Modern CUPS (`cupsd`) already does that for driverless IPP Everywhere
+printers like us, so the two overlap — and for a *same-host* service
+`cups-browsed`'s `implicitclass://` backend can't route, so its queue is broken.
 
-The catch is that the dedup needs a **stable** `printer-uuid`. CUPS assigns a
-fresh random uuid to every newly-*created* queue, so the queue must **persist**
-across restarts: we never delete it on stop, and on start the registrar
-reconciles it in place (`lpadmin -p`, which preserves the uuid). The queue is
-removed only on uninstall (`make uninstall` / `make uninstall-user`). A genuine
-name change (model re-detection) is handled by the registrar's startup sweep,
-which removes the old-named orphan.
+The fix is one line in **`/etc/cups/cups-browsed.conf`**:
 
-No `cups-browsed` config change is needed. If `cups-browsed` had already
-accumulated duplicates from before this fix (a stale cache), clear them once —
-either restart the service (the startup sweep removes leftover dupes) or
-`sudo systemctl restart cups-browsed` to rebuild its cache. Going forward the
-stable uuid keeps it deduped.
+```conf
+OnlyUnsupportedByCUPS Yes
+```
 
-The advert is also restricted to **physical** interfaces (`ipp-printer-app`
-≥ 0.6.1). Previously it published on every interface, so on a host with Docker
-bridges `cups-browsed` resolved us over each `veth*`/`br-*` link; the racy /
-duplicate address answers there made avahi hand it a *null* host name for some
-resolves, which fails its `is_local_hostname()` check, bypasses the `UUID=`
-dedup, and builds a spurious `implicitclass://` cluster. Skipping loopback,
-link-local and container/VM virtual bridges (`veth`, `docker`, `br-`, `virbr`,
-`vnet`, `vmnet`, `vboxnet`) removes those resolves at the source. What remains
-is at most a `printer-is-temporary` on-demand queue CUPS itself spins up from
-the advert — which auto-expires — not a `cups-browsed` duplicate.
+This is the recommended, forward-facing setting: `cups-browsed` then only sets
+up printers `cupsd` *can't* handle itself (legacy remote-CUPS broadcasts), and
+**defers** driverless printers like us to `cupsd`'s temporary queue. It logs
+`… is already supported by CUPS, skipping` and creates no duplicate. Nothing is
+disabled — `cups-browsed` keeps doing its real job. (It's the direction CUPS is
+heading; some distributions already default to this.)
+
+Without it, the default `cups-browsed` ignores `cupsd`'s temporary queue
+entirely (it skips `printer-is-temporary` destinations) and builds its own
+broken `implicitclass://` duplicate. If you can't change `cups-browsed.conf`,
+the alternative is to stop it (`systemctl disable --now cups-browsed`).
+
+The advert is restricted to **physical** interfaces (`ipp-printer-app` ≥ 0.6.1):
+on a host with Docker/VM bridges, advertising over every `veth*`/`br-*` link
+made avahi hand `cups-browsed` a *null* host name for some resolves, multiplying
+its chances to misfire. Loopback, link-local and container/VM virtual bridges
+(`veth`, `docker`, `br-`, `virbr`, `vnet`, `vmnet`, `vboxnet`) are skipped.
+
+## Offline behavior
+
+The status poller tracks the device. When it's powered off / unplugged:
+
+- `printer-state` goes **stopped** with `offline-report`, and the DNS-SD advert
+  is **withdrawn** — the printer drops out of print dialogs.
+- A job submitted while it's offline is **held** (`processing-stopped`) and
+  retried — like a printer holding a job through a paper jam — then prints once
+  the device is back. It is not dropped. The same applies to a media jam or an
+  out-of-paper condition.
