@@ -71,8 +71,12 @@ impl PrinterStatus {
     }
 }
 
+/// Fallback label geometry (mm) used when the printer reports no material.
+pub const DEFAULT_LABEL_HEIGHT_MM: u8 = 25;
+pub const DEFAULT_LABEL_GAP_MM: u8 = 3;
+
 /// Parsed material/consumable info from CMD_RETURN_MAT response.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MaterialInfo {
     pub uuid: String,
     pub code: String,

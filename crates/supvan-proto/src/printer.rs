@@ -304,7 +304,7 @@ impl Printer {
 
         let label_width_mm = (mat.width_mm as u32).min(crate::bitmap::PRINTHEAD_WIDTH_MM);
         let height_mm = if mat.height_mm == 0 {
-            25
+            crate::status::DEFAULT_LABEL_HEIGHT_MM as u32
         } else {
             mat.height_mm as u32
         };

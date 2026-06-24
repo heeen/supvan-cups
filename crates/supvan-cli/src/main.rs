@@ -4,15 +4,15 @@
 //! version), `material` (loaded label + RFID + remaining count), `test-print`
 //! (a built-in pattern), or `discover` (scan for Supvan Bluetooth devices).
 
-use clap::{Parser, Subcommand};
-use std::process;
-use supvan_proto::bt_transport::BtTransport;
-use supvan_proto::hidraw::HidrawDevice;
-use supvan_proto::printer::Printer;
-use supvan_proto::rfcomm::RfcommSocket;
-use supvan_proto::usb_transport::UsbHidTransport;
+use std::error::Error;
+use std::process::ExitCode;
 
-const DEFAULT_BT_ADDR: &str = "A4:93:40:A0:87:57";
+use clap::{Parser, Subcommand};
+use supvan_proto::bitmap::PRINTHEAD_WIDTH_MM;
+use supvan_proto::printer::Printer;
+use supvan_proto::status::{MaterialInfo, DEFAULT_LABEL_GAP_MM, DEFAULT_LABEL_HEIGHT_MM};
+
+type CliResult = Result<(), Box<dyn Error>>;
 
 #[derive(Parser)]
 #[command(name = "supvan-cli", about = "Supvan T50 Pro printer tool")]
@@ -26,19 +26,16 @@ enum Command {
     /// Probe printer: check device, status, material, version info
     Probe {
         /// Bluetooth address or /dev/hidrawN path
-        #[arg(default_value = DEFAULT_BT_ADDR)]
         target: String,
     },
     /// Query and print label material info
     Material {
         /// Bluetooth address or /dev/hidrawN path
-        #[arg(default_value = DEFAULT_BT_ADDR)]
         target: String,
     },
     /// Send a test print pattern
     TestPrint {
         /// Bluetooth address or /dev/hidrawN path
-        #[arg(default_value = DEFAULT_BT_ADDR)]
         target: String,
         /// Print density (0-15)
         #[arg(short, long, default_value_t = 4)]
@@ -48,45 +45,27 @@ enum Command {
     Discover,
 }
 
-fn connect(target: &str) -> Printer {
+fn connect(target: &str) -> Result<Printer, Box<dyn Error>> {
     if target.starts_with("/dev/hidraw") {
         eprintln!("Opening USB HID {target}...");
-        let dev = HidrawDevice::open(target).unwrap_or_else(|e| {
-            eprintln!("Failed to open {target}: {e}");
-            process::exit(1);
-        });
-        eprintln!("Connected (USB HID).");
-        Printer::new(Box::new(UsbHidTransport::new(dev)))
     } else {
         eprintln!("Connecting to {target} (Bluetooth)...");
-        let sock = RfcommSocket::connect_default(target).unwrap_or_else(|e| {
-            eprintln!("Connection failed: {e}");
-            eprintln!("Is the printer on and paired? bluetoothctl info {target}");
-            process::exit(1);
-        });
-        eprintln!("Connected (Bluetooth).");
-        Printer::new(Box::new(BtTransport::new(sock)))
     }
+    let printer = Printer::open_target(target)?;
+    eprintln!("Connected.");
+    Ok(printer)
 }
 
-fn cmd_probe(target: &str) {
-    let printer = connect(target);
+fn cmd_probe(target: &str) -> CliResult {
+    let printer = connect(target)?;
 
-    // Check device
-    match printer.check_device() {
-        Ok(true) => eprintln!("Device: OK"),
-        Ok(false) => {
-            eprintln!("Device: no response");
-            process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Device check failed: {e}");
-            process::exit(1);
-        }
+    if printer.check_device()? {
+        eprintln!("Device: OK");
+    } else {
+        return Err("device check: no response".into());
     }
 
-    // Status
-    if let Ok(Some(status)) = printer.query_status() {
+    if let Some(status) = printer.query_status()? {
         eprintln!("Status:");
         eprintln!("  printing:     {}", status.printing);
         eprintln!("  device_busy:  {}", status.device_busy);
@@ -99,23 +78,17 @@ fn cmd_probe(target: &str) {
         }
     }
 
-    // Device name
-    if let Ok(Some(name)) = printer.read_device_name() {
+    if let Some(name) = printer.read_device_name()? {
         eprintln!("Device name: {name}");
     }
-
-    // Firmware
-    if let Ok(Some(fw)) = printer.read_firmware_version() {
+    if let Some(fw) = printer.read_firmware_version()? {
         eprintln!("Firmware:    {fw}");
     }
-
-    // Version
-    if let Ok(Some(ver)) = printer.read_version() {
+    if let Some(ver) = printer.read_version()? {
         eprintln!("Protocol:    {ver}");
     }
 
-    // Material
-    if let Ok(Some(mat)) = printer.query_material() {
+    if let Some(mat) = printer.query_material()? {
         eprintln!("Material:");
         eprintln!("  Label:     {}mm x {}mm", mat.width_mm, mat.height_mm);
         eprintln!("  Type:      {}", mat.label_type);
@@ -124,74 +97,61 @@ fn cmd_probe(target: &str) {
         eprintln!("  UUID:      {}", mat.uuid);
         eprintln!("  Code:      {}", mat.code);
         if let Some(remaining) = mat.remaining {
-            eprintln!("  Remaining: {} labels", remaining);
+            eprintln!("  Remaining: {remaining} labels");
         }
         if let Some(ref dev_sn) = mat.device_sn {
             eprintln!("  Device SN: {dev_sn}");
         }
     }
+    Ok(())
 }
 
-fn cmd_material(target: &str) {
-    let printer = connect(target);
+fn cmd_material(target: &str) -> CliResult {
+    let printer = connect(target)?;
 
-    if !printer.check_device().unwrap_or(false) {
-        eprintln!("Device not responding");
-        process::exit(1);
+    if !printer.check_device()? {
+        return Err("device not responding".into());
     }
 
-    match printer.query_material() {
-        Ok(Some(mat)) => {
-            println!(
-                "Label:     {}mm x {}mm  (type={}, gap={}mm)",
-                mat.width_mm, mat.height_mm, mat.label_type, mat.gap_mm
+    let mat = printer
+        .query_material()?
+        .ok_or("no material info (label not installed?)")?;
+
+    println!(
+        "Label:     {}mm x {}mm  (type={}, gap={}mm)",
+        mat.width_mm, mat.height_mm, mat.label_type, mat.gap_mm
+    );
+    println!("Label SN:  {}", mat.sn);
+    println!("RFID UID:  {}", mat.uuid);
+    println!("RFID code: {}", mat.code);
+    match mat.remaining {
+        Some(r) => println!("Remaining: {r} labels"),
+        None => println!("Remaining: (not reported)"),
+    }
+    match mat.device_sn {
+        Some(s) => println!("Device SN: {s}"),
+        None => println!("Device SN: (not in this response)"),
+    }
+    Ok(())
+}
+
+fn cmd_test_print(target: &str, density: u8) -> CliResult {
+    let printer = connect(target)?;
+
+    // Query material to get label dimensions, falling back to printhead-width
+    // defaults if no label is installed.
+    let mat = match printer.query_material()? {
+        Some(m) => m,
+        None => {
+            eprintln!(
+                "No material info, using defaults ({PRINTHEAD_WIDTH_MM}mm x {DEFAULT_LABEL_HEIGHT_MM}mm)"
             );
-            println!("Label SN:  {}", mat.sn);
-            println!("RFID UID:  {}", mat.uuid);
-            println!("RFID code: {}", mat.code);
-            match mat.remaining {
-                Some(r) => println!("Remaining: {r} labels"),
-                None => println!("Remaining: (not reported)"),
+            MaterialInfo {
+                width_mm: PRINTHEAD_WIDTH_MM as u8,
+                height_mm: DEFAULT_LABEL_HEIGHT_MM,
+                gap_mm: DEFAULT_LABEL_GAP_MM,
+                ..Default::default()
             }
-            match mat.device_sn {
-                Some(s) => println!("Device SN: {s}"),
-                None => println!("Device SN: (not in this response)"),
-            }
-        }
-        Ok(None) => {
-            eprintln!("No material info (label not installed?)");
-            process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Failed to query material: {e}");
-            process::exit(1);
-        }
-    }
-}
-
-fn cmd_test_print(target: &str, density: u8) {
-    let printer = connect(target);
-
-    // Query material to get label dimensions
-    let mat = match printer.query_material() {
-        Ok(Some(m)) => m,
-        Ok(None) => {
-            eprintln!("No material info, using defaults (48mm x 25mm)");
-            supvan_proto::status::MaterialInfo {
-                uuid: String::new(),
-                code: String::new(),
-                sn: 0,
-                label_type: 0,
-                width_mm: 48,
-                height_mm: 25,
-                gap_mm: 3,
-                remaining: None,
-                device_sn: None,
-            }
-        }
-        Err(e) => {
-            eprintln!("Material query failed: {e}");
-            process::exit(1);
         }
     };
 
@@ -199,11 +159,9 @@ fn cmd_test_print(target: &str, density: u8) {
         "Printing test pattern on {}mm x {}mm label...",
         mat.width_mm, mat.height_mm
     );
-    if let Err(e) = printer.test_print(&mat, density) {
-        eprintln!("Print failed: {e}");
-        process::exit(1);
-    }
+    printer.test_print(&mat, density)?;
     eprintln!("Done.");
+    Ok(())
 }
 
 fn cmd_discover() {
@@ -214,15 +172,26 @@ fn cmd_discover() {
     eprintln!("  bluetoothctl devices | grep -i 'T0117\\|T50\\|Supvan\\|Katasymbol'");
 }
 
-fn main() {
+fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let cli = Cli::parse();
-    match cli.command {
+    let result = match cli.command {
         Command::Probe { target } => cmd_probe(&target),
         Command::Material { target } => cmd_material(&target),
         Command::TestPrint { target, density } => cmd_test_print(&target, density),
-        Command::Discover => cmd_discover(),
+        Command::Discover => {
+            cmd_discover();
+            Ok(())
+        }
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -238,6 +207,12 @@ mod tests {
             Command::Probe { target } => assert_eq!(target, "/dev/hidraw3"),
             _ => panic!("expected Probe"),
         }
+    }
+
+    #[test]
+    fn probe_requires_target() {
+        // `target` is a required positional now (no hardcoded default).
+        assert!(Cli::try_parse_from(["supvan-cli", "probe"]).is_err());
     }
 
     #[test]
