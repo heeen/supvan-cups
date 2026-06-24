@@ -6,5 +6,5 @@ edition.workspace = true
 [dependencies]
 log.workspace = true
 thiserror.workspace = true
-xz2 = "0.1"
+liblzma = "0.4"
 libc = "0.2"

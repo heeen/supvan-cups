@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 /// Patches the LZMA header to include the exact uncompressed size (Python's
 /// lzma module writes -1 by default; we write the real size).
 pub fn compress_lzma(data: &[u8]) -> Result<Vec<u8>> {
-    use xz2::stream::{LzmaOptions, Stream};
+    use liblzma::stream::{LzmaOptions, Stream};
 
     let mut opts =
         LzmaOptions::new_preset(6).map_err(|e| Error::Compression(format!("preset: {e}")))?;
@@ -22,7 +22,7 @@ pub fn compress_lzma(data: &[u8]) -> Result<Vec<u8>> {
         Stream::new_lzma_encoder(&opts).map_err(|e| Error::Compression(format!("encoder: {e}")))?;
 
     let mut compressed = Vec::with_capacity(data.len());
-    let mut encoder = xz2::write::XzEncoder::new_stream(&mut compressed, stream);
+    let mut encoder = liblzma::write::XzEncoder::new_stream(&mut compressed, stream);
     std::io::Write::write_all(&mut encoder, data)
         .map_err(|e| Error::Compression(format!("write: {e}")))?;
     encoder
@@ -53,8 +53,8 @@ pub fn compress_lzma(data: &[u8]) -> Result<Vec<u8>> {
 /// `LZMA_DATA_ERROR`. This restores the "unknown size" sentinel so liblzma
 /// decodes the encoder's native marker-terminated stream.
 pub fn decompress_lzma(data: &[u8]) -> Result<Vec<u8>> {
+    use liblzma::stream::Stream;
     use std::io::Read;
-    use xz2::stream::Stream;
 
     if data.len() < 13 {
         return Err(Error::Compression(format!(
@@ -66,7 +66,7 @@ pub fn decompress_lzma(data: &[u8]) -> Result<Vec<u8>> {
     stream_bytes[5..13].copy_from_slice(&u64::MAX.to_le_bytes());
     let stream = Stream::new_lzma_decoder(u64::MAX)
         .map_err(|e| Error::Compression(format!("decoder: {e}")))?;
-    let mut decoder = xz2::read::XzDecoder::new_stream(stream_bytes.as_slice(), stream);
+    let mut decoder = liblzma::read::XzDecoder::new_stream(stream_bytes.as_slice(), stream);
     let mut out = Vec::new();
     decoder
         .read_to_end(&mut out)
