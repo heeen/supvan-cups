@@ -7,6 +7,16 @@ pub const PRINT_BUF_SIZE: usize = 4096;
 /// Header size in print buffer.
 pub const PRINT_BUF_HEADER: usize = 14;
 
+/// Margin clamp range (dots) for the print-buffer header.
+const MARGIN_MAX_DOTS: u16 = 900;
+
+/// Maximum density / red-deepness value encoded in the buffer header.
+const MAX_DENSITY: u8 = 15;
+
+/// The firmware re-reads the running checksum at every Nth byte; the builder
+/// folds in the byte just before each boundary.
+const CHECKSUM_STRIDE: usize = 256;
+
 /// Parameters for PAGE_REG_BITS construction.
 #[derive(Debug, Clone, Default)]
 pub struct PageRegBits {
@@ -100,22 +110,19 @@ pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
     buf[3] = page_bits[1];
 
     // Column count
-    buf[4] = (p.cols_in_buf & 0xFF) as u8;
-    buf[5] = (p.cols_in_buf >> 8) as u8;
+    buf[4..6].copy_from_slice(&p.cols_in_buf.to_le_bytes());
 
     // Bytes per line
     buf[6] = p.per_line_byte;
 
-    // Margins (clamped 1-900)
-    let mt = p.margin_top.clamp(1, 900);
-    let mb = p.margin_bottom.clamp(1, 900);
-    buf[8] = (mt & 0xFF) as u8;
-    buf[9] = (mt >> 8) as u8;
-    buf[10] = (mb & 0xFF) as u8;
-    buf[11] = (mb >> 8) as u8;
+    // Margins (clamped 1..=MARGIN_MAX_DOTS)
+    let mt = p.margin_top.clamp(1, MARGIN_MAX_DOTS);
+    let mb = p.margin_bottom.clamp(1, MARGIN_MAX_DOTS);
+    buf[8..10].copy_from_slice(&mt.to_le_bytes());
+    buf[10..12].copy_from_slice(&mb.to_le_bytes());
 
     // Density
-    buf[12] = p.density.min(15);
+    buf[12] = p.density.min(MAX_DENSITY);
 
     // Image data at offset 14
     let data_len = p.image_data.len().min(PRINT_BUF_SIZE - PRINT_BUF_HEADER);
@@ -124,15 +131,14 @@ pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
     // Checksum: sum(buf[2..14]) + sum of bytes at each 256-byte boundary
     let data_end = (p.cols_in_buf as usize) * (p.per_line_byte as usize) + PRINT_BUF_HEADER;
     let mut chk: u32 = buf[2..14].iter().map(|&b| b as u32).sum();
-    let n_256 = data_end / 256;
-    for i in 1..=n_256 {
-        let idx = i * 256 - 1;
+    let n_strides = data_end / CHECKSUM_STRIDE;
+    for i in 1..=n_strides {
+        let idx = i * CHECKSUM_STRIDE - 1;
         if idx < buf.len() {
             chk += buf[idx] as u32;
         }
     }
-    buf[0] = (chk & 0xFF) as u8;
-    buf[1] = ((chk >> 8) & 0xFF) as u8;
+    buf[0..2].copy_from_slice(&(chk as u16).to_le_bytes());
 
     buf
 }

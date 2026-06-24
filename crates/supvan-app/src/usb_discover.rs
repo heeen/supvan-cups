@@ -135,22 +135,30 @@ struct UsbIds {
 }
 
 /// Walk up the sysfs device tree to find idVendor, idProduct, serial, and bus path.
+/// Read a sysfs attribute file, trimmed, returning `None` if absent or empty.
+fn read_trimmed(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Max levels to walk up from the hidraw node looking for the USB device dir.
+const MAX_SYSFS_WALK_DEPTH: usize = 6;
+
 fn read_usb_ids(device_path: &Path) -> Option<UsbIds> {
     // Resolve the "device" symlink to get the real path
     let real_path = fs::canonicalize(device_path).ok()?;
 
     // Walk up the directory tree looking for idVendor/idProduct
     let mut current = real_path.as_path();
-    for _ in 0..6 {
+    for _ in 0..MAX_SYSFS_WALK_DEPTH {
         let vid_path = current.join("idVendor");
         let pid_path = current.join("idProduct");
         if vid_path.exists() && pid_path.exists() {
             let vid = fs::read_to_string(&vid_path).ok()?.trim().to_string();
             let pid = fs::read_to_string(&pid_path).ok()?.trim().to_string();
-            let serial = fs::read_to_string(current.join("serial"))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
+            let serial = read_trimmed(&current.join("serial"));
             let bus_path = read_bus_path(current);
             return Some(UsbIds {
                 vid,
@@ -169,13 +177,7 @@ fn read_usb_ids(device_path: &Path) -> Option<UsbIds> {
 /// Returns e.g. "1-2.3" which is stable across reboots as long as the
 /// device stays on the same physical port.
 fn read_bus_path(usb_dev_dir: &Path) -> Option<String> {
-    let busnum = fs::read_to_string(usb_dev_dir.join("busnum"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    let devpath = fs::read_to_string(usb_dev_dir.join("devpath"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
+    let busnum = read_trimmed(&usb_dev_dir.join("busnum"))?;
+    let devpath = read_trimmed(&usb_dev_dir.join("devpath"))?;
     Some(format!("{busnum}-{devpath}"))
 }

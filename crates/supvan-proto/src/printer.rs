@@ -13,6 +13,16 @@ use crate::transport::Transport;
 use std::os::unix::io::RawFd;
 use std::time::Duration;
 
+/// Status-poll attempt budgets for the print state machine; each is multiplied
+/// by the poll interval inside its wait loop.
+const READY_ATTEMPTS: usize = 60;
+const PRINTING_ATTEMPTS: usize = 60;
+const BUFFER_READY_ATTEMPTS: usize = 200;
+
+/// Wait-for-completion budget: COMPLETION_POLLS × COMPLETION_POLL_INTERVAL = 30s.
+const COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const COMPLETION_POLLS: usize = 300;
+
 /// High-level printer interface over a pluggable transport.
 pub struct Printer {
     transport: Box<dyn Transport>,
@@ -242,7 +252,7 @@ impl Printer {
 
         // Step 2: Wait ready
         let status = self
-            .wait_ready(60)?
+            .wait_ready(READY_ATTEMPTS)?
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for device ready".into()))?;
         if status.has_error() {
             return Err(Error::InvalidResponse(format!(
@@ -255,12 +265,12 @@ impl Printer {
         self.start_print()?;
 
         // Step 4: Wait printing station
-        self.wait_printing(60)?
+        self.wait_printing(PRINTING_ATTEMPTS)?
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for printing station".into()))?;
 
         // Step 5: Wait buffer + transfer
         let buf_status = self
-            .wait_buffer_ready(200)?
+            .wait_buffer_ready(BUFFER_READY_ATTEMPTS)?
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for buffer space".into()))?;
         if buf_status.has_error() {
             self.stop_print()?;
@@ -272,8 +282,8 @@ impl Printer {
         self.transfer_compressed(compressed, speed)?;
 
         // Step 6: Wait completion
-        for _ in 0..300 {
-            std::thread::sleep(Duration::from_millis(100));
+        for _ in 0..COMPLETION_POLLS {
+            std::thread::sleep(COMPLETION_POLL_INTERVAL);
             if let Some(s) = self.query_status()? {
                 if !s.printing && !s.device_busy {
                     log::info!("print complete");

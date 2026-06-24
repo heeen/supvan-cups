@@ -272,7 +272,14 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
             // image/jpeg is decoded in-process (run_jpeg_job); everything else
             // is CUPS/PWG raster (CUPS' driverless path already rasterizes).
             let result = if ctx.document_format == "image/jpeg" {
-                let media_size = cfg.media_sizes.first().copied().unwrap_or([4000, 3000]);
+                // Fallback when the config carries no media size: 40×30 mm,
+                // expressed in hundredths of a millimetre.
+                const DEFAULT_MEDIA_SIZE_HMM: [i32; 2] = [4000, 3000];
+                let media_size = cfg
+                    .media_sizes
+                    .first()
+                    .copied()
+                    .unwrap_or(DEFAULT_MEDIA_SIZE_HMM);
                 crate::ipp_job::run_jpeg_job(
                     &cfg.name,
                     &cfg.device_uri,

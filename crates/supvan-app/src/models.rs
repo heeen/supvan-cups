@@ -256,10 +256,7 @@ pub fn is_matching_bt_name(name: &str) -> bool {
 ///
 /// Example: `"MFG:Supvan;MDL:T50M Pro;CMD:SUPVAN;"` → `Some("T50M Pro")`
 pub fn parse_mdl(device_id: &str) -> Option<&str> {
-    for field in device_id.split(';') {
-        if let Some(mdl) = field.strip_prefix("MDL:") {
-            return Some(mdl);
-        }
-    }
-    None
+    device_id
+        .split(';')
+        .find_map(|field| field.strip_prefix("MDL:"))
 }

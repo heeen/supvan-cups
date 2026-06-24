@@ -7,6 +7,9 @@ pub const DATA_MAGIC2: u8 = 0xBB;
 /// Max payload per data packet.
 pub const DATA_PAYLOAD_SIZE: usize = 500;
 
+/// Transfer-frame payload length declared in bytes 2-3 (= 506-byte packet + 2).
+const DATA_FRAME_PAYLOAD_LEN: u16 = 508;
+
 /// Build a 506-byte data packet (0xAA 0xBB format).
 ///
 /// Layout:
@@ -27,8 +30,7 @@ pub fn make_data_packet(data_chunk: &[u8], pkt_idx: u8, pkt_total: u8) -> [u8; 5
     pkt[6..6 + copy_len].copy_from_slice(&data_chunk[..copy_len]);
 
     let chk: u16 = pkt[4..506].iter().map(|&b| b as u16).sum();
-    pkt[2] = (chk & 0xFF) as u8;
-    pkt[3] = (chk >> 8) as u8;
+    pkt[2..4].copy_from_slice(&chk.to_le_bytes());
     pkt
 }
 
@@ -45,8 +47,7 @@ pub fn wrap_data_frame(payload: &[u8; 506]) -> [u8; 512] {
     let mut frame = [0u8; 512];
     frame[0] = MAGIC1;
     frame[1] = MAGIC2;
-    frame[2] = 0xFC;
-    frame[3] = 0x01;
+    frame[2..4].copy_from_slice(&DATA_FRAME_PAYLOAD_LEN.to_le_bytes());
     frame[4] = PROTO_ID;
     frame[5] = DATA_TYPE;
     frame[6..512].copy_from_slice(payload);

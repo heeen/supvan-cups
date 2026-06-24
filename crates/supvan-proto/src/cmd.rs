@@ -30,26 +30,13 @@ pub const CMD_READ_FWVER: u8 = 0xC5;
 ///   [12..13] param LE
 ///   [14..15] 0x0000
 pub fn make_cmd(cmd: u8, param: u16) -> [u8; 16] {
-    let mut pkt = [0u8; 16];
-    pkt[0] = MAGIC1;
-    pkt[1] = MAGIC2;
-    pkt[2] = 0x0C;
-    // pkt[3] = 0x00;
-    pkt[4] = PROTO_ID;
-    pkt[5] = PROTO_VER;
-    pkt[6] = MARKER_AA;
-    pkt[7] = cmd;
-    // pkt[10] = 0x00;
-    pkt[11] = 0x01;
-    pkt[12] = (param & 0xFF) as u8;
-    pkt[13] = (param >> 8) as u8;
-    // pkt[14..15] = 0x0000
-
-    let chk: u16 = pkt[10..16].iter().map(|&b| b as u16).sum();
-    pkt[8] = (chk & 0xFF) as u8;
-    pkt[9] = (chk >> 8) as u8;
-    pkt
+    // A plain command is a start-transfer frame with no block_count; the param
+    // occupies the block_size field at bytes 12-13.
+    make_cmd_start_trans(cmd, param, 0)
 }
+
+/// Declared payload length in byte 2 of every command frame (12 bytes).
+const CMD_PAYLOAD_LEN: u8 = 0x0C;
 
 /// Build a 16-byte start-transfer command.
 ///
@@ -60,20 +47,17 @@ pub fn make_cmd_start_trans(cmd: u8, block_size: u16, block_count: u16) -> [u8; 
     let mut pkt = [0u8; 16];
     pkt[0] = MAGIC1;
     pkt[1] = MAGIC2;
-    pkt[2] = 0x0C;
+    pkt[2] = CMD_PAYLOAD_LEN;
     pkt[4] = PROTO_ID;
     pkt[5] = PROTO_VER;
     pkt[6] = MARKER_AA;
     pkt[7] = cmd;
     pkt[11] = 0x01;
-    pkt[12] = (block_size & 0xFF) as u8;
-    pkt[13] = (block_size >> 8) as u8;
-    pkt[14] = (block_count & 0xFF) as u8;
-    pkt[15] = (block_count >> 8) as u8;
+    pkt[12..14].copy_from_slice(&block_size.to_le_bytes());
+    pkt[14..16].copy_from_slice(&block_count.to_le_bytes());
 
     let chk: u16 = pkt[10..16].iter().map(|&b| b as u16).sum();
-    pkt[8] = (chk & 0xFF) as u8;
-    pkt[9] = (chk >> 8) as u8;
+    pkt[8..10].copy_from_slice(&chk.to_le_bytes());
     pkt
 }
 

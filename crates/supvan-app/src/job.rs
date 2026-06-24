@@ -14,6 +14,14 @@ use crate::dump::{dumps_enabled, JobDump, JobManifest, PgmAccumulator};
 use crate::mock;
 use crate::printer_device::KsDevice;
 
+/// Maximum device print density; darkness (0-100%) scales onto 0..=MAX_DENSITY.
+const MAX_DENSITY: i32 = 15;
+
+/// Poll cadence and budget while waiting for print completion
+/// (COMPLETION_POLLS × COMPLETION_POLL_INTERVAL = 30s).
+const COMPLETION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+const COMPLETION_POLLS: u32 = 300;
+
 /// Minimal RFC-3339-ish timestamp without pulling chrono.
 fn now_iso() -> String {
     let secs = std::time::SystemTime::now()
@@ -211,8 +219,8 @@ impl KsJob {
     pub fn end(self, dev: &KsDevice) {
         if let Some(ref printer) = dev.printer {
             let mut settled = false;
-            for i in 0..300 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            for i in 0..COMPLETION_POLLS {
+                std::thread::sleep(COMPLETION_POLL_INTERVAL);
                 match printer.query_status() {
                     Ok(Some(s)) if !s.printing && !s.device_busy => {
                         log::info!("KsJob::end: complete after {i} polls");
@@ -252,7 +260,8 @@ impl RasterDriver for KsJob {
         };
 
         let darkness = printer.darkness();
-        let density = ((darkness * 15 + 50) / 100) as u8;
+        // darkness is 0-100%; scale to 0-MAX_DENSITY, rounding to nearest.
+        let density = ((darkness * MAX_DENSITY + 50) / 100) as u8;
         let printhead_width_dots = printer.printhead_width_dots();
 
         let mut ks = KsJob::start(dev, w, h, bpl, density, printhead_width_dots)?;

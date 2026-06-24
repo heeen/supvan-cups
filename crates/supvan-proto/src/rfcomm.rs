@@ -12,6 +12,9 @@ const AF_BLUETOOTH: i32 = 31;
 const BTPROTO_RFCOMM: i32 = 3;
 const RFCOMM_DEFAULT_CHANNEL: u8 = 1;
 
+/// 512-byte data frames are sent as 128-byte sub-chunks (4 per frame).
+const BT_DATA_CHUNK_SIZE: usize = 128;
+
 /// sockaddr_rc structure for RFCOMM connections.
 #[repr(C)]
 struct SockaddrRc {
@@ -225,8 +228,7 @@ impl RfcommSocket {
         frame: &[u8; 512],
         read_response: bool,
     ) -> Result<Option<Vec<u8>>> {
-        for i in 0..4 {
-            let chunk = &frame[i * 128..(i + 1) * 128];
+        for chunk in frame.chunks(BT_DATA_CHUNK_SIZE) {
             std::thread::sleep(Duration::from_millis(10));
             self.drain();
             let mut sent = 0;

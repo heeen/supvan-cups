@@ -17,6 +17,10 @@ const USB_MAGIC2: u8 = 0x40;
 /// Default response timeout for USB HID.
 const USB_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Offset of the null-terminated ASCII device serial USB tacks onto a
+/// RETURN_MAT response (BT omits it).
+const USB_DEVICE_SN_OFFSET: usize = 40;
+
 /// USB HID transport over a hidraw device.
 pub struct UsbHidTransport {
     dev: HidrawDevice,
@@ -91,13 +95,11 @@ impl UsbHidTransport {
             log::debug!("USB material response too short: {} bytes", resp.len());
             return None;
         }
-        // ASCII device serial at offset 40 (USB-only addition).
-        let dev_sn = if resp.len() > 40 {
-            let end = resp[40..]
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(resp.len() - 40);
-            let s = String::from_utf8_lossy(&resp[40..40 + end]).to_string();
+        // ASCII device serial at USB_DEVICE_SN_OFFSET (USB-only addition).
+        let dev_sn = if resp.len() > USB_DEVICE_SN_OFFSET {
+            let tail = &resp[USB_DEVICE_SN_OFFSET..];
+            let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+            let s = String::from_utf8_lossy(&tail[..end]).to_string();
             if s.is_empty() { None } else { Some(s) }
         } else {
             None

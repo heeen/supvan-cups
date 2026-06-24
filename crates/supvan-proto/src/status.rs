@@ -2,6 +2,14 @@ use crate::cmd::{
     CMD_INQUIRY_STA, CMD_RD_DEV_NAME, CMD_READ_FWVER, CMD_READ_REV, CMD_RETURN_MAT, MAGIC1, MAGIC2,
 };
 
+/// Length of the BT response framing that precedes every payload. Parsers slice
+/// the payload from `data[BT_RESP_HEADER_LEN..]`.
+const BT_RESP_HEADER_LEN: usize = 22;
+
+/// Number of fixed framing bytes the RD_DEV_NAME `payload_len` field counts
+/// before the device-name string itself.
+const DEV_NAME_PAYLOAD_PREFIX: usize = 18;
+
 /// Parsed printer status from CMD_INQUIRY_STA response.
 #[derive(Debug, Clone, Default)]
 pub struct PrinterStatus {
@@ -27,45 +35,34 @@ pub struct PrinterStatus {
 }
 
 impl PrinterStatus {
+    /// Error flags paired with their human-readable descriptions, in report
+    /// order. Single source for [`has_error`](Self::has_error) and
+    /// [`error_description`](Self::error_description).
+    fn error_flags(&self) -> [(bool, &'static str); 8] {
+        [
+            (self.label_rw_error, "label read/write error"),
+            (self.label_end, "label roll end"),
+            (self.label_mode_error, "label mode mismatch"),
+            (self.ribbon_rw_error, "ribbon read/write error"),
+            (self.ribbon_end, "ribbon end"),
+            (self.cover_open, "cover open"),
+            (self.head_temp_high, "printhead temperature too high"),
+            (self.label_not_installed, "label not installed"),
+        ]
+    }
+
     /// Check if any error flag is set.
     pub fn has_error(&self) -> bool {
-        self.label_rw_error
-            || self.label_end
-            || self.label_mode_error
-            || self.ribbon_rw_error
-            || self.ribbon_end
-            || self.cover_open
-            || self.head_temp_high
-            || self.label_not_installed
+        self.error_flags().iter().any(|(set, _)| *set)
     }
 
     /// Return a human-readable description of any errors.
     pub fn error_description(&self) -> Option<String> {
-        let mut errors = Vec::new();
-        if self.label_rw_error {
-            errors.push("label read/write error");
-        }
-        if self.label_end {
-            errors.push("label roll end");
-        }
-        if self.label_mode_error {
-            errors.push("label mode mismatch");
-        }
-        if self.ribbon_rw_error {
-            errors.push("ribbon read/write error");
-        }
-        if self.ribbon_end {
-            errors.push("ribbon end");
-        }
-        if self.cover_open {
-            errors.push("cover open");
-        }
-        if self.head_temp_high {
-            errors.push("printhead temperature too high");
-        }
-        if self.label_not_installed {
-            errors.push("label not installed");
-        }
+        let errors: Vec<&str> = self
+            .error_flags()
+            .into_iter()
+            .filter_map(|(set, msg)| set.then_some(msg))
+            .collect();
         if errors.is_empty() {
             None
         } else {
@@ -142,10 +139,10 @@ pub(crate) fn decode_status_bits(b0: u8, b1: u8, b2: u8, b3: u8, print_count: u1
 /// ASCII serial USB ships. Use the BlueZ `Device1.Name` property for
 /// the BT-side serial instead.
 pub fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
-    if !check_header(data, 22, CMD_RETURN_MAT) {
+    if !check_header(data, BT_RESP_HEADER_LEN, CMD_RETURN_MAT) {
         return None;
     }
-    parse_material_payload(&data[22..], None)
+    parse_material_payload(&data[BT_RESP_HEADER_LEN..], None)
 }
 
 /// Decode the per-transport material payload. `device_sn_ascii` is what
@@ -197,15 +194,16 @@ pub fn parse_material_payload(p: &[u8], device_sn_ascii: Option<String>) -> Opti
 
 /// Parse device name from CMD_RD_DEV_NAME response.
 pub fn parse_device_name(data: &[u8]) -> Option<String> {
-    if !check_header(data, 23, CMD_RD_DEV_NAME) {
+    if !check_header(data, BT_RESP_HEADER_LEN + 1, CMD_RD_DEV_NAME) {
         return None;
     }
     let payload_len = u16::from_le_bytes([data[2], data[3]]) as usize;
-    let data_len = payload_len.saturating_sub(18);
-    if data_len == 0 || data_len > data.len() - 22 {
+    // `payload_len` counts DEV_NAME_PAYLOAD_PREFIX framing bytes before the name.
+    let data_len = payload_len.saturating_sub(DEV_NAME_PAYLOAD_PREFIX);
+    if data_len == 0 || data_len > data.len() - BT_RESP_HEADER_LEN {
         return None;
     }
-    let name = String::from_utf8_lossy(&data[22..22 + data_len])
+    let name = String::from_utf8_lossy(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + data_len])
         .trim_end_matches('\0')
         .to_string();
     if name.is_empty() {
@@ -217,18 +215,18 @@ pub fn parse_device_name(data: &[u8]) -> Option<String> {
 
 /// Parse firmware version from CMD_READ_FWVER response.
 pub fn parse_firmware_version(data: &[u8]) -> Option<u8> {
-    if !check_header(data, 23, CMD_READ_FWVER) {
+    if !check_header(data, BT_RESP_HEADER_LEN + 1, CMD_READ_FWVER) {
         return None;
     }
-    Some(data[22])
+    Some(data[BT_RESP_HEADER_LEN])
 }
 
 /// Parse protocol version from CMD_READ_REV response.
 pub fn parse_version(data: &[u8]) -> Option<String> {
-    if !check_header(data, 25, CMD_READ_REV) {
+    if !check_header(data, BT_RESP_HEADER_LEN + 3, CMD_READ_REV) {
         return None;
     }
-    let ver = String::from_utf8_lossy(&data[22..25])
+    let ver = String::from_utf8_lossy(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + 3])
         .trim_end_matches('\0')
         .to_string();
     if ver.is_empty() {

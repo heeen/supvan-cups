@@ -21,19 +21,11 @@ const BLUEZ_SERVICE: &str = "org.bluez";
 fn has_spp_uuid(props: &PropMap) -> bool {
     props
         .get("UUIDs")
-        .map(|v| {
-            if let Some(iter) = v.0.as_iter() {
-                for item in iter {
-                    if let Some(uuid) = item.as_str() {
-                        if uuid.to_lowercase().starts_with(SPP_UUID_PREFIX) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            false
-        })
-        .unwrap_or(false)
+        .and_then(|v| v.0.as_iter())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str())
+        .any(|uuid| uuid.to_lowercase().starts_with(SPP_UUID_PREFIX))
 }
 
 fn get_str_prop(props: &PropMap, key: &str) -> Option<String> {
@@ -49,14 +41,15 @@ fn get_bool_prop(props: &PropMap, key: &str) -> Option<bool> {
 }
 
 fn find_adapter(objects: &ManagedObjects) -> Option<dbus::Path<'static>> {
-    for (path, ifaces) in objects {
-        if ifaces.contains_key("org.bluez.Adapter1") {
-            log::debug!("find_adapter: found {path}");
-            return Some(path.clone());
-        }
+    let found = objects
+        .iter()
+        .find(|(_, ifaces)| ifaces.contains_key("org.bluez.Adapter1"))
+        .map(|(path, _)| path.clone());
+    match &found {
+        Some(path) => log::debug!("find_adapter: found {path}"),
+        None => log::warn!("find_adapter: no BlueZ adapter found"),
     }
-    log::warn!("find_adapter: no BlueZ adapter found");
-    None
+    found
 }
 
 fn run_discovery(conn: &Connection, adapter: &dbus::Path<'_>) {
