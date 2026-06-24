@@ -36,9 +36,9 @@ impl Printer {
     /// Open a USB HID printer at the given `/dev/hidrawN` path.
     pub fn open_usb(path: &str) -> Result<Self> {
         let dev = crate::hidraw::HidrawDevice::open(path)?;
-        Ok(Self::new(Box::new(crate::usb_transport::UsbHidTransport::new(
-            dev,
-        ))))
+        Ok(Self::new(Box::new(
+            crate::usb_transport::UsbHidTransport::new(dev),
+        )))
     }
 
     /// Open a Bluetooth printer at the given RFCOMM address (`AA:BB:CC:DD:EE:FF`).
@@ -126,10 +126,11 @@ impl Printer {
     pub fn wait_ready(&self, max_attempts: usize) -> Result<Option<PrinterStatus>> {
         for _ in 0..max_attempts {
             let st = self.query_status()?;
-            if let Some(ref s) = st {
-                if !s.device_busy && !s.printing {
-                    return Ok(st);
-                }
+            if let Some(ref s) = st
+                && !s.device_busy
+                && !s.printing
+            {
+                return Ok(st);
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -284,11 +285,12 @@ impl Printer {
         // Step 6: Wait completion
         for _ in 0..COMPLETION_POLLS {
             std::thread::sleep(COMPLETION_POLL_INTERVAL);
-            if let Some(s) = self.query_status()? {
-                if !s.printing && !s.device_busy {
-                    log::info!("print complete");
-                    return Ok(());
-                }
+            if let Some(s) = self.query_status()?
+                && !s.printing
+                && !s.device_busy
+            {
+                log::info!("print complete");
+                return Ok(());
             }
         }
 

@@ -22,10 +22,20 @@ fn hexdump(label: &str, bytes: &[u8]) {
     println!("[{label}] {} bytes:", bytes.len());
     for (i, chunk) in bytes.chunks(16).enumerate() {
         let off = i * 16;
-        let hex: String = chunk.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+        let hex: String = chunk
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let ascii: String = chunk
             .iter()
-            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         println!("  {off:3}:  {hex:<48}  {ascii}");
     }
@@ -33,7 +43,10 @@ fn hexdump(label: &str, bytes: &[u8]) {
 
 fn find_serial(label: &str, bytes: &[u8], needle: &str) {
     let needle_bytes = needle.as_bytes();
-    if let Some(pos) = bytes.windows(needle_bytes.len()).position(|w| w == needle_bytes) {
+    if let Some(pos) = bytes
+        .windows(needle_bytes.len())
+        .position(|w| w == needle_bytes)
+    {
         println!("[{label}] serial '{needle}' found as ASCII at offset {pos}");
     } else {
         println!("[{label}] serial '{needle}' NOT found as ASCII");
@@ -57,8 +70,14 @@ fn main() {
     let sock = RfcommSocket::connect_default(bt_mac).expect("rfcomm connect");
     let bt_t = BtTransport::new(sock);
 
-    let usb_resp = usb_t.send_cmd(CMD_RETURN_MAT, 0).expect("usb send").unwrap_or_default();
-    let bt_resp = bt_t.send_cmd(CMD_RETURN_MAT, 0).expect("bt send").unwrap_or_default();
+    let usb_resp = usb_t
+        .send_cmd(CMD_RETURN_MAT, 0)
+        .expect("usb send")
+        .unwrap_or_default();
+    let bt_resp = bt_t
+        .send_cmd(CMD_RETURN_MAT, 0)
+        .expect("bt send")
+        .unwrap_or_default();
 
     hexdump("USB", &usb_resp);
     hexdump("BT ", &bt_resp);

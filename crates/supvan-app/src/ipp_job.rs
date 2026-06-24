@@ -3,9 +3,9 @@
 use std::io::Cursor;
 use std::pin::pin;
 
+use ipp_printer_app::{JobFailure, JobOptions, PrinterHandle, RasterDriver};
 use print_raster::reader::cups::unified::CupsRasterUnifiedReader;
 use print_raster::reader::{RasterPageReader, RasterReader};
-use ipp_printer_app::{JobFailure, JobOptions, PrinterHandle, RasterDriver};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::job::KsJob;
@@ -66,9 +66,7 @@ async fn run_cups_raster_job_async(
         printhead_width_dots,
         darkness,
     );
-    let handle = PrinterHandle {
-        record: &record,
-    };
+    let handle = PrinterHandle { record: &record };
 
     let cursor = Cursor::new(raster);
     let pinned = pin!(cursor.compat());
@@ -228,8 +226,7 @@ fn fit_luma(
     media_size_hmm: [i32; 2],
     printhead_width_dots: u32,
 ) -> (Vec<u8>, u32, u32) {
-    let label_w =
-        ((media_size_hmm[0].max(0) / 100 * DOTS_PER_MM) as u32).min(printhead_width_dots);
+    let label_w = ((media_size_hmm[0].max(0) / 100 * DOTS_PER_MM) as u32).min(printhead_width_dots);
     let label_h = (media_size_hmm[1].max(0) / 100 * DOTS_PER_MM) as u32;
     if label_w == 0 || label_h == 0 {
         return (Vec::new(), 0, 0);

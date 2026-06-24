@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(buf[5], 0); // cols high
         assert_eq!(buf[8], 8); // margin top
         assert_eq!(buf[12], 4); // density
-                                // Checksum should be non-zero (at least header bytes contribute)
+        // Checksum should be non-zero (at least header bytes contribute)
         let chk = buf[0] as u16 | ((buf[1] as u16) << 8);
         assert!(chk > 0);
     }

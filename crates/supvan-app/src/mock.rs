@@ -63,7 +63,9 @@ impl MockController {
             std::env::var("SUPVAN_MOCK_FAIL_REPEAT").ok().as_deref(),
             std::env::var("SUPVAN_MOCK_FAIL").ok().as_deref(),
             std::env::var("SUPVAN_MOCK_STICKY").ok().as_deref(),
-            std::env::var("SUPVAN_MOCK_RECOVER_AFTER_MS").ok().as_deref(),
+            std::env::var("SUPVAN_MOCK_RECOVER_AFTER_MS")
+                .ok()
+                .as_deref(),
             std::env::var("SUPVAN_MOCK_UNREACHABLE").ok().as_deref(),
             Instant::now(),
         )
@@ -83,9 +85,7 @@ impl MockController {
             .map(Duration::from_millis)
             .unwrap_or(Duration::ZERO);
         let fail_repeat = fail_repeat == Some("1");
-        let fail_template = fail_tokens
-            .filter(|s| !s.is_empty())
-            .map(parse_status);
+        let fail_template = fail_tokens.filter(|s| !s.is_empty()).map(parse_status);
         let sticky = sticky_tokens
             .filter(|s| !s.is_empty())
             .map(parse_status)
@@ -141,7 +141,6 @@ impl MockController {
         }
         self.sticky_reasons
     }
-
 }
 
 fn parse_status(s: &str) -> ParsedStatus {
@@ -205,10 +204,12 @@ mod tests {
         let c = ctrl(Some("media-empty"), None, None, None);
         let first = c.take_print_failure();
         assert!(first.is_some());
-        assert!(first
-            .unwrap()
-            .printer_reasons
-            .contains(PrinterReason::MEDIA_EMPTY));
+        assert!(
+            first
+                .unwrap()
+                .printer_reasons
+                .contains(PrinterReason::MEDIA_EMPTY)
+        );
         assert!(c.take_print_failure().is_none());
     }
 
@@ -252,7 +253,10 @@ mod tests {
         let c = MockController::new(None, None, None, None, Some("1"), Some("1"), Instant::now());
         assert!(c.is_unreachable(), "device should start unreachable");
         std::thread::sleep(Duration::from_millis(5));
-        assert!(!c.is_unreachable(), "device should recover after the deadline");
+        assert!(
+            !c.is_unreachable(),
+            "device should recover after the deadline"
+        );
     }
 
     #[test]

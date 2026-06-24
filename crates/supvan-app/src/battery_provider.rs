@@ -7,10 +7,10 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use dbus::Path;
 use dbus::blocking::SyncConnection;
 use dbus::channel::{MatchingReceiver, Sender};
 use dbus::message::MatchRule;
-use dbus::Path;
 use dbus_crossroads::{Crossroads, IfaceToken};
 
 const PROVIDER_ROOT: &str = "/com/supvan/battery";
@@ -41,7 +41,6 @@ impl BatteryProviderHandle {
             percentage,
         });
     }
-
 }
 
 impl Drop for BatteryProviderHandle {

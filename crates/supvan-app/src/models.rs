@@ -4,7 +4,7 @@
 //! accessing any other function in this module.
 
 use std::collections::HashMap;
-use std::ffi::{c_int, CString};
+use std::ffi::{CString, c_int};
 use std::sync::OnceLock;
 
 use serde::Deserialize;

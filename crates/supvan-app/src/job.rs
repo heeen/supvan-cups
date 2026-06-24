@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use ipp_printer_app::{JobFailure, JobOptions, PrinterHandle, PrinterReason, RasterDriver};
-use supvan_proto::bitmap::{center_in_printhead, raster_to_column_major, DEFAULT_MARGIN_DOTS};
+use supvan_proto::bitmap::{DEFAULT_MARGIN_DOTS, center_in_printhead, raster_to_column_major};
 use supvan_proto::buffer::split_into_buffers;
 use supvan_proto::compress::compress_buffers;
 use supvan_proto::error::Error as ProtoError;
@@ -10,7 +10,7 @@ use supvan_proto::speed::calc_speed;
 use supvan_proto::status::PrinterStatus;
 
 use crate::dither::dither_line;
-use crate::dump::{dumps_enabled, JobDump, JobManifest, PgmAccumulator};
+use crate::dump::{JobDump, JobManifest, PgmAccumulator, dumps_enabled};
 use crate::mock;
 use crate::printer_device::KsDevice;
 
@@ -95,7 +95,9 @@ impl KsJob {
         density: u8,
         printhead_width_dots: u32,
     ) -> Result<Self, JobFailure> {
-        log::info!("KsJob::start: {w}x{h}, bpl={bpl}, density={density}, printhead={printhead_width_dots}");
+        log::info!(
+            "KsJob::start: {w}x{h}, bpl={bpl}, density={density}, printhead={printhead_width_dots}"
+        );
         Ok(KsJob {
             width: w,
             height: h,
@@ -136,7 +138,12 @@ impl KsJob {
         if let Some(acc) = self.pgm_acc.take() {
             dump.pgm(&acc);
         }
-        dump.pbm(&self.raster_data, self.width, self.height, self.bytes_per_line);
+        dump.pbm(
+            &self.raster_data,
+            self.width,
+            self.height,
+            self.bytes_per_line,
+        );
 
         let (col_data, num_cols, _) =
             raster_to_column_major(&self.raster_data, self.width, self.height);
@@ -153,8 +160,8 @@ impl KsJob {
             self.density,
         );
 
-        let (compressed, avg) =
-            compress_buffers(&buffers).map_err(|e| JobFailure::other(format!("compression: {e}")))?;
+        let (compressed, avg) = compress_buffers(&buffers)
+            .map_err(|e| JobFailure::other(format!("compression: {e}")))?;
         let speed = calc_speed(avg);
 
         let outcome: Result<(), JobFailure> = if let Some(ref printer) = dev.printer {
@@ -271,12 +278,7 @@ impl RasterDriver for KsJob {
         Ok(ks)
     }
 
-    fn write_line(
-        &mut self,
-        options: &JobOptions,
-        y: u32,
-        line: &[u8],
-    ) -> Result<(), JobFailure> {
+    fn write_line(&mut self, options: &JobOptions, y: u32, line: &[u8]) -> Result<(), JobFailure> {
         if options.bits_per_pixel == 8 {
             let width = options.width;
             let input = &line[..(width as usize).min(line.len())];
@@ -287,12 +289,16 @@ impl RasterDriver for KsJob {
             let mut mono = vec![0u8; bpl_1bpp];
             dither_line(input, width, y, &mut mono);
             if !self.append_line(y, &mono) {
-                return Err(JobFailure::other(format!("write_line: y={y} out of bounds")));
+                return Err(JobFailure::other(format!(
+                    "write_line: y={y} out of bounds"
+                )));
             }
             return Ok(());
         }
         if !self.append_line(y, line) {
-            return Err(JobFailure::other(format!("write_line: y={y} out of bounds")));
+            return Err(JobFailure::other(format!(
+                "write_line: y={y} out of bounds"
+            )));
         }
         Ok(())
     }

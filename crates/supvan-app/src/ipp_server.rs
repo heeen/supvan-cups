@@ -3,11 +3,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use parking_lot::RwLock;
 use ipp_printer_app::{
-    default_state_path, DeviceBackend, JobContext, JobFailure, JobOutcome, PollStatus,
-    PrinterConfig, PrinterReason, PrinterRegistry, ReadyMedia, Server, ServerOptions,
+    DeviceBackend, JobContext, JobFailure, JobOutcome, PollStatus, PrinterConfig, PrinterReason,
+    PrinterRegistry, ReadyMedia, Server, ServerOptions, default_state_path,
 };
+use parking_lot::RwLock;
 
 use crate::discover::BtCandidate;
 use crate::ipp_job::{config_from_family, run_cups_raster_job};
@@ -40,10 +40,24 @@ pub struct SupvanDeviceBackend;
 fn slug(name: &str) -> String {
     let s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
-    let s: String = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
-    if s.is_empty() { "printer".to_string() } else { s }
+    let s: String = s
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if s.is_empty() {
+        "printer".to_string()
+    } else {
+        s
+    }
 }
 
 impl DeviceBackend for SupvanDeviceBackend {
@@ -162,14 +176,22 @@ impl DeviceBackend for SupvanDeviceBackend {
                     log::info!(
                         "{}: roll swap detected — was {}x{}mm uuid={} -> now {}x{}mm uuid={}",
                         key,
-                        prev.width_mm, prev.height_mm, prev.uuid,
-                        fp.width_mm, fp.height_mm, fp.uuid,
+                        prev.width_mm,
+                        prev.height_mm,
+                        prev.uuid,
+                        fp.width_mm,
+                        fp.height_mm,
+                        fp.uuid,
                     );
                 }
                 None => {
                     log::info!(
                         "{}: roll registered — {}x{}mm uuid={} remaining={:?}",
-                        key, fp.width_mm, fp.height_mm, fp.uuid, mat.remaining,
+                        key,
+                        fp.width_mm,
+                        fp.height_mm,
+                        fp.uuid,
+                        mat.remaining,
                     );
                 }
                 _ => {}
@@ -219,11 +241,11 @@ impl DeviceBackend for SupvanDeviceBackend {
     }
 
     fn driver_for_device(&self, device_id: &str, device_uri: &str) -> Option<String> {
-        if !device_id.is_empty() {
-            if let Some(mdl) = models::parse_mdl(device_id) {
-                let family = models::family_for_model_hint(mdl);
-                return Some(family.driver_name.to_string_lossy().into_owned());
-            }
+        if !device_id.is_empty()
+            && let Some(mdl) = models::parse_mdl(device_id)
+        {
+            let family = models::family_for_model_hint(mdl);
+            return Some(family.driver_name.to_string_lossy().into_owned());
         }
         if device_uri.starts_with("supvan://") || device_uri.starts_with("mock://") {
             return Some(
@@ -244,12 +266,7 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
     let state_path = default_state_path("supvan-printer-app");
     let backend = Arc::new(SupvanDeviceBackend);
 
-    Server::bootstrap_printers(
-        &registry,
-        backend.as_ref(),
-        &state_path,
-        config_from_family,
-    );
+    Server::bootstrap_printers(&registry, backend.as_ref(), &state_path, config_from_family);
 
     prune_stale_supvan(&registry);
     Server::persist(&registry, &state_path);
@@ -265,7 +282,7 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                         return JobOutcome::Failed(JobFailure::other(format!(
                             "printer not found: {}",
                             ctx.printer_name
-                        )))
+                        )));
                     }
                 }
             };
@@ -307,9 +324,9 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                 // the framework retry until it's resolved, not drop it (the way
                 // a real printer holds a job through a jam). Anything else is a
                 // permanent failure for this document.
-                Err(f) if f.printer_reasons.is_recoverable() => {
-                    JobOutcome::DeviceUnavailable { reasons: f.printer_reasons }
-                }
+                Err(f) if f.printer_reasons.is_recoverable() => JobOutcome::DeviceUnavailable {
+                    reasons: f.printer_reasons,
+                },
                 Err(f) => JobOutcome::Failed(f),
             }
         },

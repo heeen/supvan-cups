@@ -5,10 +5,10 @@
 //! `compress_buffers` → decompress → verify roundtrip.
 
 use supvan_proto::bitmap::{
-    center_in_printhead, create_test_pattern, raster_to_column_major, DEFAULT_MARGIN_DOTS,
-    DOTS_PER_MM, PRINTHEAD_BYTES_PER_LINE, PRINTHEAD_WIDTH_DOTS,
+    DEFAULT_MARGIN_DOTS, DOTS_PER_MM, PRINTHEAD_BYTES_PER_LINE, PRINTHEAD_WIDTH_DOTS,
+    center_in_printhead, create_test_pattern, raster_to_column_major,
 };
-use supvan_proto::buffer::{split_into_buffers, MAX_BUF_DATA, PRINT_BUF_HEADER, PRINT_BUF_SIZE};
+use supvan_proto::buffer::{MAX_BUF_DATA, PRINT_BUF_HEADER, PRINT_BUF_SIZE, split_into_buffers};
 use supvan_proto::compress::{compress_buffers, decompress_lzma};
 
 // ---------------------------------------------------------------------------

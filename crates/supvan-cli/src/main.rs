@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use supvan_proto::bitmap::PRINTHEAD_WIDTH_MM;
 use supvan_proto::printer::Printer;
-use supvan_proto::status::{MaterialInfo, DEFAULT_LABEL_GAP_MM, DEFAULT_LABEL_HEIGHT_MM};
+use supvan_proto::status::{DEFAULT_LABEL_GAP_MM, DEFAULT_LABEL_HEIGHT_MM, MaterialInfo};
 
 type CliResult = Result<(), Box<dyn Error>>;
 

@@ -4,7 +4,7 @@
 //! 64-byte HID reports for data transfer, and 8-byte responses.
 
 use crate::error::Result;
-use crate::hidraw::{HidrawDevice, HID_REPORT_SIZE};
+use crate::hidraw::{HID_REPORT_SIZE, HidrawDevice};
 use crate::status::{MaterialInfo, PrinterStatus};
 use crate::transport::Transport;
 use std::os::unix::io::RawFd;

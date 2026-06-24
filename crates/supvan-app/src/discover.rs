@@ -5,8 +5,8 @@
 //! 3. Auto-pair matching unpaired devices
 //! 4. Report matching paired devices with SPP UUID
 
-use dbus::blocking::stdintf::org_freedesktop_dbus::ObjectManager;
 use dbus::blocking::Connection;
+use dbus::blocking::stdintf::org_freedesktop_dbus::ObjectManager;
 use std::time::Duration;
 
 use crate::models;

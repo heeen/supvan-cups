@@ -219,8 +219,8 @@ mod tests {
         let input = vec![0xFF; 2]; // 2 columns, 1 byte each
         let (output, bpl) = center_in_printhead(&input, 2, 8, 24);
         assert_eq!(bpl, 3); // 24/8 = 3 bytes per line
-                            // 8 dots centered in 24 -> offset = 8 dots = 1 byte
-                            // Col 0: byte 0 = 0x00, byte 1 = 0xFF, byte 2 = 0x00
+        // 8 dots centered in 24 -> offset = 8 dots = 1 byte
+        // Col 0: byte 0 = 0x00, byte 1 = 0xFF, byte 2 = 0x00
         assert_eq!(output[0], 0x00);
         assert_eq!(output[1], 0xFF);
         assert_eq!(output[2], 0x00);

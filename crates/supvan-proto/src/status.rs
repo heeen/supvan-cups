@@ -114,7 +114,13 @@ pub fn parse_status(data: &[u8]) -> Option<PrinterStatus> {
 /// the print counter into a [`PrinterStatus`]. Shared by the BT framing
 /// ([`parse_status`]) and the USB HID framing (`parse_usb_status`), which carry
 /// the same bit layout at different offsets.
-pub(crate) fn decode_status_bits(b0: u8, b1: u8, b2: u8, b3: u8, print_count: u16) -> PrinterStatus {
+pub(crate) fn decode_status_bits(
+    b0: u8,
+    b1: u8,
+    b2: u8,
+    b3: u8,
+    print_count: u16,
+) -> PrinterStatus {
     PrinterStatus {
         buf_full: b0 & 0x01 != 0,
         label_rw_error: b0 & 0x02 != 0,
@@ -210,11 +216,7 @@ pub fn parse_device_name(data: &[u8]) -> Option<String> {
     let name = String::from_utf8_lossy(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + data_len])
         .trim_end_matches('\0')
         .to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 /// Parse firmware version from CMD_READ_FWVER response.
@@ -233,11 +235,7 @@ pub fn parse_version(data: &[u8]) -> Option<String> {
     let ver = String::from_utf8_lossy(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + 3])
         .trim_end_matches('\0')
         .to_string();
-    if ver.is_empty() {
-        None
-    } else {
-        Some(ver)
-    }
+    if ver.is_empty() { None } else { Some(ver) }
 }
 
 /// Check a response frame is at least `min_len` bytes, starts with the protocol
