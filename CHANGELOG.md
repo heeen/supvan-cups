@@ -52,6 +52,13 @@ A cleanup, correctness, and modernization pass across all three crates
   chunk/stride sizes, default media) and idiomatized manual loops with iterators,
   combinators, and `to_le_bytes`/`from_le_bytes`.
 
+### Dependencies
+
+- `cargo update`: 46 in-range patch/minor lockfile bumps.
+- `toml` 0.8 → 1.0.
+- Migrated `xz2` 0.1 → `liblzma` 0.4 (the maintained continuation of the same
+  liblzma bindings; identical API, built from source via `cc`).
+
 ## [0.1.0]
 
 - Initial native-Rust Supvan T50 label-printer stack: `supvan-proto` (BT/USB HID
