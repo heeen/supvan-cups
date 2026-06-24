@@ -14,10 +14,8 @@ pub const CMD_START_PRINT: u8 = 0x13;
 pub const CMD_STOP_PRINT: u8 = 0x14;
 pub const CMD_RD_DEV_NAME: u8 = 0x16;
 pub const CMD_READ_REV: u8 = 0x17;
-pub const CMD_PAPER_SKIP: u8 = 0x2E;
 pub const CMD_RETURN_MAT: u8 = 0x30;
 pub const CMD_NEXT_ZIPPEDBULK: u8 = 0x5C;
-pub const CMD_SET_RFID_DATA: u8 = 0x5D;
 pub const CMD_READ_FWVER: u8 = 0xC5;
 
 /// Build a standard 16-byte command frame (0x7E 0x5A format).

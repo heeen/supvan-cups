@@ -5,6 +5,5 @@ edition.workspace = true
 
 [dependencies]
 supvan-proto.workspace = true
-log.workspace = true
 env_logger.workspace = true
 clap = { version = "4", features = ["derive"] }

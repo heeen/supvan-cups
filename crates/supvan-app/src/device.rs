@@ -13,9 +13,7 @@
 //! [`open_supvan`] resolves the name to USB (preferred when present) or BT.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use supvan_proto::bt_transport::BtTransport;
 use supvan_proto::printer::Printer;
@@ -23,20 +21,6 @@ use supvan_proto::rfcomm::RfcommSocket;
 
 use crate::battery_provider;
 use crate::printer_device::KsDevice;
-
-static LAST_PRINT_TIME: AtomicU64 = AtomicU64::new(0);
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs()
-}
-
-/// Record that a print job is active.
-pub fn bt_touch_print_time() {
-    LAST_PRINT_TIME.store(now_secs(), Ordering::Relaxed);
-}
 
 /// BT printer connection cache, keyed by address. Persists across `open_bt`
 /// calls so the status poller and print jobs reuse one RFCOMM socket per
@@ -65,7 +49,6 @@ pub fn open_bt(uri: &str) -> Option<Box<KsDevice>> {
     let addr = uri
         .strip_prefix("btrfcomm://")
         .and_then(|rest| rest.find('/').map(|pos| &rest[pos + 1..]))?;
-    bt_touch_print_time();
 
     let printer = {
         let cached = bt_cache().lock().unwrap().get(addr).cloned();

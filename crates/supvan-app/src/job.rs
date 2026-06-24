@@ -9,7 +9,6 @@ use supvan_proto::error::Error as ProtoError;
 use supvan_proto::speed::calc_speed;
 use supvan_proto::status::PrinterStatus;
 
-use crate::device;
 use crate::dither::dither_line;
 use crate::dump::{dumps_enabled, JobDump, JobManifest, PgmAccumulator};
 use crate::mock;
@@ -60,7 +59,7 @@ pub fn failure_from_status(s: &PrinterStatus, context: &str) -> JobFailure {
     JobFailure::new(reasons, format!("{context}: {desc}"))
 }
 
-pub fn failure_from_proto(e: ProtoError, context: &str) -> JobFailure {
+fn failure_from_proto(e: ProtoError, context: &str) -> JobFailure {
     let reasons = match &e {
         ProtoError::Io(_) => PrinterReason::OFFLINE,
         _ => PrinterReason::OTHER,
@@ -190,7 +189,6 @@ impl KsJob {
         };
         dump.manifest(&JobManifest {
             timestamp: now_iso(),
-            printer_name: String::new(),
             width: self.width,
             height: self.height,
             bytes_per_line: self.bytes_per_line,
@@ -245,8 +243,6 @@ impl RasterDriver for KsJob {
         options: &JobOptions,
         dev: &Self::Device,
     ) -> Result<Self, JobFailure> {
-        device::bt_touch_print_time();
-
         let w = options.width;
         let h = options.height;
         let bpl = if options.bits_per_pixel == 8 {

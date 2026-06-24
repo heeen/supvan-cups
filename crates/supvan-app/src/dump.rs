@@ -147,7 +147,6 @@ impl JobDump {
 #[derive(Debug, Clone, Serialize)]
 pub struct JobManifest {
     pub timestamp: String,
-    pub printer_name: String,
     pub width: u32,
     pub height: u32,
     pub bytes_per_line: u32,
