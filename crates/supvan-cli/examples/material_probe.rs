@@ -37,20 +37,6 @@ fn find_serial(label: &str, bytes: &[u8], needle: &str) {
         println!("[{label}] serial '{needle}' found as ASCII at offset {pos}");
     } else {
         println!("[{label}] serial '{needle}' NOT found as ASCII");
-        // Try BCD-encoded digits — each ASCII digit byte → packed two-per-byte
-        let digits: String = needle.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-        for i in 0..bytes.len().saturating_sub(digits.len()) {
-            let candidate: String = (0..digits.len())
-                .map(|j| {
-                    let b = bytes[i + j];
-                    if b.is_ascii_alphanumeric() { b as char } else { '.' }
-                })
-                .collect();
-            if candidate == digits {
-                println!("[{label}]   …found as plain ASCII at offset {i}");
-                break;
-            }
-        }
     }
 }
 

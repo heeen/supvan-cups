@@ -141,23 +141,7 @@ impl KsDevice {
             }
         };
 
-        let mut reasons = PrinterReason::empty();
-        if status.cover_open {
-            reasons |= PrinterReason::COVER_OPEN;
-        }
-        if status.label_end || status.label_not_installed {
-            reasons |= PrinterReason::MEDIA_EMPTY;
-        }
-        if status.label_rw_error || status.label_mode_error {
-            reasons |= PrinterReason::MEDIA_JAM;
-        }
-        if status.ribbon_end {
-            reasons |= PrinterReason::MEDIA_NEEDED;
-        }
-        if status.head_temp_high {
-            reasons |= PrinterReason::OTHER;
-        }
-        reasons
+        crate::job::reasons_from_status(&status)
     }
 
     /// Check if this is a mock device (no real printer connection).

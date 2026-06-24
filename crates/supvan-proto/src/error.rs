@@ -11,6 +11,9 @@ pub enum Error {
     #[error("invalid parameter: {0}")]
     InvalidParam(String),
 
+    #[error("timed out waiting for {0}")]
+    Timeout(&'static str),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

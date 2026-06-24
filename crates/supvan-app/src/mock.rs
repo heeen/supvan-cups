@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use ipp_printer_app::{JobFailure, PrinterReason};
 use supvan_proto::status::PrinterStatus;
 
-use crate::job::failure_from_status;
+use crate::job::{failure_from_status, reasons_from_status};
 
 #[derive(Clone)]
 struct ParsedStatus {
@@ -145,50 +145,30 @@ impl MockController {
 }
 
 fn parse_status(s: &str) -> ParsedStatus {
-    let mut p = ParsedStatus::default();
+    // Set the backing `PrinterStatus` flags from tokens, then derive the IPP
+    // reasons once via the shared mapping so the mock can't drift from the real
+    // status→reason translation. `offline` has no status-flag backing, so it is
+    // OR-ed in separately.
+    let mut status = PrinterStatus::default();
+    let mut extra = PrinterReason::empty();
     for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
         match tok.to_ascii_lowercase().as_str() {
-            "media-empty" | "label-end" => {
-                p.status.label_end = true;
-                p.reasons |= PrinterReason::MEDIA_EMPTY;
-            }
-            "label-not-installed" => {
-                p.status.label_not_installed = true;
-                p.reasons |= PrinterReason::MEDIA_EMPTY;
-            }
-            "media-jam" | "label-rw-error" => {
-                p.status.label_rw_error = true;
-                p.reasons |= PrinterReason::MEDIA_JAM;
-            }
-            "label-mode-error" => {
-                p.status.label_mode_error = true;
-                p.reasons |= PrinterReason::MEDIA_JAM;
-            }
-            "ribbon-rw-error" => {
-                p.status.ribbon_rw_error = true;
-                p.reasons |= PrinterReason::MEDIA_JAM;
-            }
-            "ribbon-end" | "media-needed" => {
-                p.status.ribbon_end = true;
-                p.reasons |= PrinterReason::MEDIA_NEEDED;
-            }
-            "cover-open" => {
-                p.status.cover_open = true;
-                p.reasons |= PrinterReason::COVER_OPEN;
-            }
-            "head-temp-high" | "other" => {
-                p.status.head_temp_high = true;
-                p.reasons |= PrinterReason::OTHER;
-            }
-            "offline" | "offline-report" => {
-                p.reasons |= PrinterReason::OFFLINE;
-            }
-            unknown => {
-                log::warn!("mock: ignoring unknown reason token '{unknown}'");
-            }
+            "media-empty" | "label-end" => status.label_end = true,
+            "label-not-installed" => status.label_not_installed = true,
+            "media-jam" | "label-rw-error" => status.label_rw_error = true,
+            "label-mode-error" => status.label_mode_error = true,
+            "ribbon-rw-error" => status.ribbon_rw_error = true,
+            "ribbon-end" | "media-needed" => status.ribbon_end = true,
+            "cover-open" => status.cover_open = true,
+            "head-temp-high" | "other" => status.head_temp_high = true,
+            "offline" | "offline-report" => extra |= PrinterReason::OFFLINE,
+            unknown => log::warn!("mock: ignoring unknown reason token '{unknown}'"),
         }
     }
-    p
+    ParsedStatus {
+        reasons: reasons_from_status(&status) | extra,
+        status,
+    }
 }
 
 #[cfg(test)]

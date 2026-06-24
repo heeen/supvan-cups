@@ -24,7 +24,14 @@ fn now_iso() -> String {
     format!("unix:{secs}")
 }
 
-pub fn failure_from_status(s: &PrinterStatus, context: &str) -> JobFailure {
+/// Map raw printer status flags to IPP `printer-state-reasons`.
+///
+/// Single source of truth, shared by the terminal job-failure path
+/// ([`failure_from_status`]), live status polling ([`KsDevice::status`]), and
+/// the mock simulator. Returns the raw reason bits with no fallback — callers
+/// decide how an empty set is treated (failure path forces `OTHER`, live
+/// polling leaves it empty = nothing wrong).
+pub(crate) fn reasons_from_status(s: &PrinterStatus) -> PrinterReason {
     let mut reasons = PrinterReason::empty();
     if s.cover_open {
         reasons |= PrinterReason::COVER_OPEN;
@@ -35,6 +42,17 @@ pub fn failure_from_status(s: &PrinterStatus, context: &str) -> JobFailure {
     if s.label_rw_error || s.label_mode_error || s.ribbon_rw_error {
         reasons |= PrinterReason::MEDIA_JAM;
     }
+    if s.ribbon_end {
+        reasons |= PrinterReason::MEDIA_NEEDED;
+    }
+    if s.head_temp_high {
+        reasons |= PrinterReason::OTHER;
+    }
+    reasons
+}
+
+pub fn failure_from_status(s: &PrinterStatus, context: &str) -> JobFailure {
+    let mut reasons = reasons_from_status(s);
     if reasons.is_empty() {
         reasons = PrinterReason::OTHER;
     }
@@ -194,19 +212,25 @@ impl KsJob {
 
     pub fn end(self, dev: &KsDevice) {
         if let Some(ref printer) = dev.printer {
+            let mut settled = false;
             for i in 0..300 {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 match printer.query_status() {
                     Ok(Some(s)) if !s.printing && !s.device_busy => {
                         log::info!("KsJob::end: complete after {i} polls");
+                        settled = true;
                         break;
                     }
                     Ok(_) => {}
                     Err(e) => {
                         log::warn!("KsJob::end: status error: {e}");
+                        settled = true;
                         break;
                     }
                 }
+            }
+            if !settled {
+                log::warn!("KsJob::end: timeout waiting for completion");
             }
             dev.printing.store(false, Ordering::Release);
         }

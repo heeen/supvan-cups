@@ -257,7 +257,7 @@ impl Printer {
         }
 
         log::warn!("timeout waiting for print completion");
-        Ok(())
+        Err(Error::Timeout("print completion"))
     }
 
     /// Full test print workflow: generate test pattern, build buffers, compress, print.
