@@ -9,7 +9,7 @@ use supvan_proto::bitmap::{
     DOTS_PER_MM, PRINTHEAD_BYTES_PER_LINE, PRINTHEAD_WIDTH_DOTS,
 };
 use supvan_proto::buffer::{split_into_buffers, MAX_BUF_DATA, PRINT_BUF_HEADER, PRINT_BUF_SIZE};
-use supvan_proto::compress::compress_buffers;
+use supvan_proto::compress::{compress_buffers, decompress_lzma};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,24 +49,6 @@ fn parse_pbm_p4(pbm: &[u8]) -> (u32, u32, usize) {
     (w, h, offset)
 }
 
-/// Decompress LZMA1-alone data (as produced by `compress_lzma`).
-fn decompress_lzma(data: &[u8]) -> Vec<u8> {
-    use std::io::Read;
-    // `compress_lzma` patches the alone header with a definite uncompressed
-    // size (what the printer firmware reads); combined with the encoder's
-    // trailing end-marker, strict liblzma builds — the bundled liblzma the CI
-    // links, reproducible with LZMA_API_STATIC=1 — reject it. Restore the
-    // unknown-size sentinel so liblzma decodes the encoder's native
-    // marker-terminated stream.
-    let mut stream_bytes = data.to_vec();
-    stream_bytes[5..13].copy_from_slice(&u64::MAX.to_le_bytes());
-    let stream = xz2::stream::Stream::new_lzma_decoder(u64::MAX).unwrap();
-    let mut decoder = xz2::read::XzDecoder::new_stream(stream_bytes.as_slice(), stream);
-    let mut decompressed = Vec::new();
-    decoder.read_to_end(&mut decompressed).unwrap();
-    decompressed
-}
-
 /// Run the full pipeline on row-major MSB-first raster data and return
 /// (buffers, compressed, decompressed) for verification.
 fn run_pipeline(
@@ -89,7 +71,7 @@ fn run_pipeline(
     );
 
     let (compressed, _avg) = compress_buffers(&buffers).unwrap();
-    let decompressed = decompress_lzma(&compressed);
+    let decompressed = decompress_lzma(&compressed).unwrap();
 
     (buffers, compressed, decompressed)
 }
@@ -229,7 +211,7 @@ fn test_full_pipeline_test_pattern() {
     let (compressed, avg) = compress_buffers(&buffers).unwrap();
     assert!(avg > 0, "average compressed size should be > 0");
 
-    let decompressed = decompress_lzma(&compressed);
+    let decompressed = decompress_lzma(&compressed).unwrap();
     let mut concat = Vec::with_capacity(buffers.len() * PRINT_BUF_SIZE);
     for buf in &buffers {
         concat.extend_from_slice(buf);
@@ -293,7 +275,7 @@ fn test_pipeline_various_sizes() {
 
         // Compression roundtrip
         let (compressed, _) = compress_buffers(&buffers).unwrap();
-        let decompressed = decompress_lzma(&compressed);
+        let decompressed = decompress_lzma(&compressed).unwrap();
         let mut concat = Vec::with_capacity(buffers.len() * PRINT_BUF_SIZE);
         for buf in &buffers {
             concat.extend_from_slice(buf);

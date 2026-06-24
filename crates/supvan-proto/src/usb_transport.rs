@@ -121,27 +121,13 @@ impl UsbHidTransport {
             return None;
         }
 
-        let b0 = resp[1]; // MSTA low
-        let b1 = resp[2]; // MSTA high
-        let b2 = resp[3]; // FSTA low
-        let b3 = resp[4]; // FSTA high
-
-        Some(PrinterStatus {
-            buf_full: b0 & 0x01 != 0,
-            label_rw_error: b0 & 0x02 != 0,
-            label_end: b0 & 0x04 != 0,
-            label_mode_error: b0 & 0x08 != 0,
-            ribbon_rw_error: b0 & 0x10 != 0,
-            ribbon_end: b0 & 0x20 != 0,
-            low_battery: b0 & 0x40 != 0,
-            device_busy: b1 & 0x04 != 0,
-            head_temp_high: b1 & 0x08 != 0,
-            cover_open: b2 & 0x08 != 0,
-            insert_usb: b2 & 0x10 != 0,
-            printing: b2 & 0x40 != 0,
-            label_not_installed: b3 & 0x01 != 0,
-            print_count: u16::from_le_bytes([resp[5], resp[6]]),
-        })
+        Some(crate::status::decode_status_bits(
+            resp[1], // MSTA low
+            resp[2], // MSTA high
+            resp[3], // FSTA low
+            resp[4], // FSTA high
+            u16::from_le_bytes([resp[5], resp[6]]),
+        ))
     }
 }
 

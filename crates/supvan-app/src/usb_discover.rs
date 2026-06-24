@@ -11,9 +11,7 @@
 use std::fs;
 use std::path::Path;
 
-use supvan_proto::hidraw::HidrawDevice;
 use supvan_proto::printer::Printer;
-use supvan_proto::usb_transport::UsbHidTransport;
 
 use crate::models;
 use crate::util::is_mock_mode;
@@ -44,9 +42,7 @@ fn probe_printer_name(hidraw_path: &str) -> Option<String> {
     if is_mock_mode() {
         return None;
     }
-    let dev = HidrawDevice::open(hidraw_path).ok()?;
-    let transport = UsbHidTransport::new(dev);
-    let printer = Printer::new(Box::new(transport));
+    let printer = Printer::open_usb(hidraw_path).ok()?;
     let mat = match printer.query_material() {
         Ok(Some(m)) => m,
         Ok(None) => {

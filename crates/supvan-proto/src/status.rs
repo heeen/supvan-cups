@@ -100,12 +100,21 @@ pub fn parse_status(data: &[u8]) -> Option<PrinterStatus> {
         return None;
     }
 
-    let b0 = data[14];
-    let b1 = data[15];
-    let b2 = data[16];
-    let b3 = data[17];
+    Some(decode_status_bits(
+        data[14],
+        data[15],
+        data[16],
+        data[17],
+        u16::from_le_bytes([data[18], data[19]]),
+    ))
+}
 
-    Some(PrinterStatus {
+/// Decode the four status register bytes (MSTA low/high, FSTA low/high) plus
+/// the print counter into a [`PrinterStatus`]. Shared by the BT framing
+/// ([`parse_status`]) and the USB HID framing (`parse_usb_status`), which carry
+/// the same bit layout at different offsets.
+pub(crate) fn decode_status_bits(b0: u8, b1: u8, b2: u8, b3: u8, print_count: u16) -> PrinterStatus {
+    PrinterStatus {
         buf_full: b0 & 0x01 != 0,
         label_rw_error: b0 & 0x02 != 0,
         label_end: b0 & 0x04 != 0,
@@ -119,8 +128,8 @@ pub fn parse_status(data: &[u8]) -> Option<PrinterStatus> {
         insert_usb: b2 & 0x10 != 0,
         printing: b2 & 0x40 != 0,
         label_not_installed: b3 & 0x01 != 0,
-        print_count: u16::from_le_bytes([data[18], data[19]]),
-    })
+        print_count,
+    }
 }
 
 /// Parse material info from CMD_RETURN_MAT response (BT framing).
@@ -133,10 +142,7 @@ pub fn parse_status(data: &[u8]) -> Option<PrinterStatus> {
 /// ASCII serial USB ships. Use the BlueZ `Device1.Name` property for
 /// the BT-side serial instead.
 pub fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
-    if data.len() < 22 || data[0] != MAGIC1 || data[1] != MAGIC2 {
-        return None;
-    }
-    if data[7] != CMD_RETURN_MAT {
+    if !check_header(data, 22, CMD_RETURN_MAT) {
         return None;
     }
     parse_material_payload(&data[22..], None)
@@ -191,10 +197,7 @@ pub fn parse_material_payload(p: &[u8], device_sn_ascii: Option<String>) -> Opti
 
 /// Parse device name from CMD_RD_DEV_NAME response.
 pub fn parse_device_name(data: &[u8]) -> Option<String> {
-    if data.len() <= 22 || data[0] != MAGIC1 || data[1] != MAGIC2 {
-        return None;
-    }
-    if data[7] != CMD_RD_DEV_NAME {
+    if !check_header(data, 23, CMD_RD_DEV_NAME) {
         return None;
     }
     let payload_len = u16::from_le_bytes([data[2], data[3]]) as usize;
@@ -214,10 +217,7 @@ pub fn parse_device_name(data: &[u8]) -> Option<String> {
 
 /// Parse firmware version from CMD_READ_FWVER response.
 pub fn parse_firmware_version(data: &[u8]) -> Option<u8> {
-    if data.len() <= 22 || data[0] != MAGIC1 || data[1] != MAGIC2 {
-        return None;
-    }
-    if data[7] != CMD_READ_FWVER {
+    if !check_header(data, 23, CMD_READ_FWVER) {
         return None;
     }
     Some(data[22])
@@ -225,10 +225,7 @@ pub fn parse_firmware_version(data: &[u8]) -> Option<u8> {
 
 /// Parse protocol version from CMD_READ_REV response.
 pub fn parse_version(data: &[u8]) -> Option<String> {
-    if data.len() <= 24 || data[0] != MAGIC1 || data[1] != MAGIC2 {
-        return None;
-    }
-    if data[7] != CMD_READ_REV {
+    if !check_header(data, 25, CMD_READ_REV) {
         return None;
     }
     let ver = String::from_utf8_lossy(&data[22..25])
@@ -241,9 +238,16 @@ pub fn parse_version(data: &[u8]) -> Option<String> {
     }
 }
 
+/// Check a response frame is at least `min_len` bytes, starts with the protocol
+/// magic, and echoes `cmd` in the command slot. Shared guard for every BT-framed
+/// parser; `min_len` makes each parser's length requirement explicit.
+fn check_header(data: &[u8], min_len: usize, cmd: u8) -> bool {
+    data.len() >= min_len && data[0] == MAGIC1 && data[1] == MAGIC2 && data[7] == cmd
+}
+
 /// Validate a response frame has correct magic and echoes the expected command.
 pub fn validate_response(data: &[u8], expected_cmd: u8) -> bool {
-    data.len() >= 8 && data[0] == MAGIC1 && data[1] == MAGIC2 && data[7] == expected_cmd
+    check_header(data, 8, expected_cmd)
 }
 
 fn hex_upper(bytes: &[u8]) -> String {

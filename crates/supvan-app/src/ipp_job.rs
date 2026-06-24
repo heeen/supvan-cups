@@ -10,7 +10,6 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::job::KsJob;
 use crate::models;
-use crate::printer_device::KsDevice;
 
 /// Printhead resolution in dots per millimetre (matches supvan-proto).
 const DOTS_PER_MM: i32 = 8;
@@ -53,7 +52,7 @@ async fn run_cups_raster_job_async(
     raster: &[u8],
     copies_override: u32,
 ) -> Result<(), JobFailure> {
-    let dev = open_device(device_uri).ok_or_else(|| {
+    let dev = crate::device::open_uri(device_uri).ok_or_else(|| {
         JobFailure::new(
             ipp_printer_app::PrinterReason::OFFLINE,
             format!("cannot open device {device_uri}"),
@@ -136,16 +135,6 @@ async fn run_cups_raster_job_async(
     Ok(())
 }
 
-fn open_device(uri: &str) -> Option<KsDevice> {
-    if uri.starts_with("supvan://") {
-        crate::device::open_supvan(uri)
-    } else if uri.starts_with("mock://") {
-        crate::device::open_mock(uri)
-    } else {
-        None
-    }
-}
-
 /// Build the throwaway [`PrinterRecord`] that backs the [`PrinterHandle`] a
 /// [`KsJob`] reads (only `darkness` + `printhead_width_dots` matter). Shared by
 /// the raster and JPEG paths.
@@ -198,7 +187,7 @@ pub fn run_jpeg_job(
         )));
     }
 
-    let dev = open_device(device_uri).ok_or_else(|| {
+    let dev = crate::device::open_uri(device_uri).ok_or_else(|| {
         JobFailure::new(
             ipp_printer_app::PrinterReason::OFFLINE,
             format!("cannot open device {device_uri}"),

@@ -44,6 +44,36 @@ pub fn compress_lzma(data: &[u8]) -> Result<Vec<u8>> {
     Ok(compressed)
 }
 
+/// Decompress an LZMA1-alone stream produced by [`compress_lzma`].
+///
+/// `compress_lzma` patches the alone header with the definite uncompressed size
+/// (what the printer firmware reads); combined with the encoder's trailing
+/// end-of-stream marker, strict liblzma builds (e.g. the bundled liblzma CI
+/// links, reproducible with `LZMA_API_STATIC=1`) reject that as
+/// `LZMA_DATA_ERROR`. This restores the "unknown size" sentinel so liblzma
+/// decodes the encoder's native marker-terminated stream.
+pub fn decompress_lzma(data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    use xz2::stream::Stream;
+
+    if data.len() < 13 {
+        return Err(Error::Compression(format!(
+            "lzma stream too short: {} bytes",
+            data.len()
+        )));
+    }
+    let mut stream_bytes = data.to_vec();
+    stream_bytes[5..13].copy_from_slice(&u64::MAX.to_le_bytes());
+    let stream = Stream::new_lzma_decoder(u64::MAX)
+        .map_err(|e| Error::Compression(format!("decoder: {e}")))?;
+    let mut decoder = xz2::read::XzDecoder::new_stream(stream_bytes.as_slice(), stream);
+    let mut out = Vec::new();
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| Error::Compression(format!("decompress: {e}")))?;
+    Ok(out)
+}
+
 /// Compress concatenated print buffers for transfer.
 ///
 /// Takes a slice of 4096-byte print buffers, concatenates them, and compresses
@@ -102,24 +132,9 @@ mod tests {
         let data = vec![0x42u8; 1024];
         let compressed = compress_lzma(&data).unwrap();
 
-        // `compress_lzma` patches the alone-format header with the definite
-        // uncompressed size — what the printer firmware reads. That definite
-        // size combined with the encoder's trailing end-of-stream marker is a
-        // combination strict liblzma builds (e.g. the bundled liblzma the CI
-        // links, reproducible locally with LZMA_API_STATIC=1) reject as
-        // LZMA_DATA_ERROR. Restore the "unknown size" sentinel so liblzma
-        // decodes the encoder's native marker-terminated stream; this verifies
-        // the LZMA payload round-trips on any liblzma. The patched header bytes
-        // are checked separately by `test_compress_lzma_header`.
-        let mut stream_bytes = compressed.clone();
-        stream_bytes[5..13].copy_from_slice(&u64::MAX.to_le_bytes());
-
-        use std::io::Read;
-        use xz2::stream::Stream;
-        let s = Stream::new_lzma_decoder(u64::MAX).unwrap();
-        let mut decoder = xz2::read::XzDecoder::new_stream(stream_bytes.as_slice(), s);
-        let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).unwrap();
+        // Verifies the LZMA payload round-trips via the shared decoder. The
+        // patched header bytes are checked separately by `test_compress_lzma_header`.
+        let decompressed = decompress_lzma(&compressed).unwrap();
         assert_eq!(decompressed, data);
     }
 

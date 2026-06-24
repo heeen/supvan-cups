@@ -15,9 +15,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use supvan_proto::bt_transport::BtTransport;
 use supvan_proto::printer::Printer;
-use supvan_proto::rfcomm::RfcommSocket;
 
 use crate::battery_provider;
 use crate::printer_device::KsDevice;
@@ -32,14 +30,13 @@ fn bt_cache() -> &'static Mutex<HashMap<String, Arc<Mutex<Printer>>>> {
 
 fn dial_bt(addr: &str) -> Option<Printer> {
     log::info!("device::open_bt: dialing {addr} (no cache entry)");
-    let sock = match RfcommSocket::connect_default(addr) {
-        Ok(s) => s,
+    match Printer::open_bt(addr) {
+        Ok(p) => Some(p),
         Err(e) => {
             log::error!("device::open_bt: RFCOMM connect failed for {addr}: {e}");
-            return None;
+            None
         }
-    };
-    Some(Printer::new(Box::new(BtTransport::new(sock))))
+    }
 }
 
 /// Open `btrfcomm://host/path/AA:BB:CC:DD:EE:FF`, reusing a cached RFCOMM
@@ -50,42 +47,48 @@ pub fn open_bt(uri: &str) -> Option<Box<KsDevice>> {
         .strip_prefix("btrfcomm://")
         .and_then(|rest| rest.find('/').map(|pos| &rest[pos + 1..]))?;
 
-    let printer = {
-        let cached = bt_cache().lock().unwrap().get(addr).cloned();
-        match cached {
-            Some(arc) => {
-                let alive = arc.lock().unwrap().check_device().unwrap_or(false);
-                if alive {
-                    log::debug!("device::open_bt: reusing cached socket for {addr}");
-                    arc
-                } else {
-                    log::info!("device::open_bt: cached socket for {addr} is dead, reconnecting");
-                    bt_cache().lock().unwrap().remove(addr);
-                    let fresh = dial_bt(addr)?;
-                    let arced = Arc::new(Mutex::new(fresh));
-                    bt_cache()
-                        .lock()
-                        .unwrap()
-                        .insert(addr.to_string(), arced.clone());
-                    arced
-                }
-            }
-            None => {
-                let fresh = dial_bt(addr)?;
-                let arced = Arc::new(Mutex::new(fresh));
-                bt_cache()
-                    .lock()
-                    .unwrap()
-                    .insert(addr.to_string(), arced.clone());
-                arced
-            }
+    let cached = bt_cache().lock().unwrap().get(addr).cloned();
+    let printer = match cached {
+        Some(arc) if arc.lock().unwrap().check_device().unwrap_or(false) => {
+            log::debug!("device::open_bt: reusing cached socket for {addr}");
+            arc
         }
+        Some(_) => {
+            log::info!("device::open_bt: cached socket for {addr} is dead, reconnecting");
+            bt_cache().lock().unwrap().remove(addr);
+            dial_and_cache(addr)?
+        }
+        None => dial_and_cache(addr)?,
     };
 
     if let Some(h) = battery_provider::handle() {
         h.add_device(addr, 100);
     }
     Some(Box::new(KsDevice::from_shared(printer)))
+}
+
+/// Dial a fresh RFCOMM socket for `addr` and insert it into the connection
+/// cache, returning the shared handle.
+fn dial_and_cache(addr: &str) -> Option<Arc<Mutex<Printer>>> {
+    let arced = Arc::new(Mutex::new(dial_bt(addr)?));
+    bt_cache()
+        .lock()
+        .unwrap()
+        .insert(addr.to_string(), arced.clone());
+    Some(arced)
+}
+
+/// Open a device from its URI, dispatching on the scheme: `supvan://` resolves
+/// through the discovery transport map, `mock://` yields a simulator device.
+/// Any other scheme is unsupported and returns `None`.
+pub fn open_uri(uri: &str) -> Option<KsDevice> {
+    if uri.starts_with("supvan://") {
+        open_supvan(uri)
+    } else if uri.starts_with("mock://") {
+        open_mock(uri)
+    } else {
+        None
+    }
 }
 
 /// Open `mock://ID`. Always succeeds with a no-connection KsDevice driven by

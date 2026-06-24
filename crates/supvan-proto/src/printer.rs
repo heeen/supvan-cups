@@ -23,6 +23,32 @@ impl Printer {
         Self { transport }
     }
 
+    /// Open a USB HID printer at the given `/dev/hidrawN` path.
+    pub fn open_usb(path: &str) -> Result<Self> {
+        let dev = crate::hidraw::HidrawDevice::open(path)?;
+        Ok(Self::new(Box::new(crate::usb_transport::UsbHidTransport::new(
+            dev,
+        ))))
+    }
+
+    /// Open a Bluetooth printer at the given RFCOMM address (`AA:BB:CC:DD:EE:FF`).
+    pub fn open_bt(addr: &str) -> Result<Self> {
+        let sock = crate::rfcomm::RfcommSocket::connect_default(addr)?;
+        Ok(Self::new(Box::new(crate::bt_transport::BtTransport::new(
+            sock,
+        ))))
+    }
+
+    /// Open a printer from a target string: a `/dev/hidrawN` path selects USB
+    /// HID, anything else is treated as a Bluetooth address.
+    pub fn open_target(target: &str) -> Result<Self> {
+        if target.starts_with("/dev/hidraw") {
+            Self::open_usb(target)
+        } else {
+            Self::open_bt(target)
+        }
+    }
+
     /// Return the raw file descriptor of the underlying transport.
     pub fn raw_fd(&self) -> RawFd {
         self.transport.raw_fd()

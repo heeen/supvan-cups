@@ -130,13 +130,7 @@ impl DeviceBackend for SupvanDeviceBackend {
     }
 
     fn poll_status(&self, config: &PrinterConfig) -> Option<PollStatus> {
-        let dev = if config.device_uri.starts_with("supvan://") {
-            crate::device::open_supvan(&config.device_uri)
-        } else if config.device_uri.starts_with("mock://") {
-            crate::device::open_mock(&config.device_uri)
-        } else {
-            return None;
-        };
+        let dev = crate::device::open_uri(&config.device_uri);
         let Some(dev) = dev else {
             // Device unreachable (powered off / unplugged / BT down). Report
             // OFFLINE so the framework marks us printer-state=stopped and CUPS
@@ -216,13 +210,9 @@ impl DeviceBackend for SupvanDeviceBackend {
 
     fn identify(&self, config: &PrinterConfig, actions: &[String]) {
         // Map Identify-Printer to a physical beep via CHECK_DEVICE. Any action
-        // keyword (display/sound/flash) triggers the same buzzer.
-        let dev = if config.device_uri.starts_with("supvan://") {
-            crate::device::open_supvan(&config.device_uri)
-        } else {
-            return;
-        };
-        if let Some(dev) = dev {
+        // keyword (display/sound/flash) triggers the same buzzer. Mock devices
+        // no-op on identify.
+        if let Some(dev) = crate::device::open_uri(&config.device_uri) {
             log::info!("identify {} (actions={actions:?})", config.name);
             dev.identify();
         }

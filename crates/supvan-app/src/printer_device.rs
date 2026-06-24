@@ -2,10 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use supvan_proto::error::{Error as ProtoError, Result as ProtoResult};
-use supvan_proto::hidraw::HidrawDevice;
 use supvan_proto::printer::Printer;
 use supvan_proto::status::PrinterStatus;
-use supvan_proto::usb_transport::UsbHidTransport;
 
 use crate::util::is_mock_mode;
 
@@ -91,16 +89,13 @@ impl KsDevice {
         }
 
         log::info!("KsDevice::open_usb: opening {hidraw_path}");
-        let dev = match HidrawDevice::open(hidraw_path) {
-            Ok(d) => d,
+        let printer = match Printer::open_usb(hidraw_path) {
+            Ok(p) => p,
             Err(e) => {
                 log::error!("KsDevice::open_usb: hidraw open failed: {e}");
                 return None;
             }
         };
-
-        let transport = UsbHidTransport::new(dev);
-        let printer = Printer::new(Box::new(transport));
 
         log::debug!("KsDevice::open_usb: opened {hidraw_path}");
         Some(Box::new(KsDevice {
