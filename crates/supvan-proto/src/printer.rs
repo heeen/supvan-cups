@@ -122,6 +122,18 @@ impl Printer {
         self.transport.send_cmd(CMD_STOP_PRINT, 0)
     }
 
+    /// PAPER_SKIP (0x2E) — feed/advance one blank label. Returns `Ok(())` once
+    /// the device acks; errors if there is no response.
+    pub fn paper_skip(&self) -> Result<()> {
+        log::info!("PAPER_SKIP");
+        let resp = self.transport.send_cmd(CMD_PAPER_SKIP, 0)?;
+        if resp.is_some_and(|r| self.transport.validate_response(&r, CMD_PAPER_SKIP)) {
+            Ok(())
+        } else {
+            Err(Error::InvalidResponse("PAPER_SKIP: no ack".into()))
+        }
+    }
+
     /// Wait for device to be idle (not busy, not printing).
     pub fn wait_ready(&self, max_attempts: usize) -> Result<Option<PrinterStatus>> {
         for _ in 0..max_attempts {

@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/) (pre-1.0: breaking changes bump the
 minor version).
 
+## [Unreleased]
+
+### Added
+
+- `supvan-cli feed <target>` — advances one blank label via the `PAPER_SKIP`
+  (0x2E) command (`Printer::paper_skip`).
+
 ## [0.2.0] - 2026-06-24
 
 A cleanup, correctness, and modernization pass across all three crates

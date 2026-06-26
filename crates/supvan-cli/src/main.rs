@@ -41,6 +41,11 @@ enum Command {
         #[arg(short, long, default_value_t = 4)]
         density: u8,
     },
+    /// Feed/advance one blank label (PAPER_SKIP)
+    Feed {
+        /// Bluetooth address or /dev/hidrawN path
+        target: String,
+    },
     /// Scan for Supvan Bluetooth devices (via BlueZ D-Bus)
     Discover,
 }
@@ -164,6 +169,13 @@ fn cmd_test_print(target: &str, density: u8) -> CliResult {
     Ok(())
 }
 
+fn cmd_feed(target: &str) -> CliResult {
+    let printer = connect(target)?;
+    printer.paper_skip()?;
+    eprintln!("Fed one label.");
+    Ok(())
+}
+
 fn cmd_discover() {
     eprintln!("Scanning for Supvan devices...");
     eprintln!("(For full D-Bus discovery, use the CUPS backend with 0 args)");
@@ -180,6 +192,7 @@ fn main() -> ExitCode {
         Command::Probe { target } => cmd_probe(&target),
         Command::Material { target } => cmd_material(&target),
         Command::TestPrint { target, density } => cmd_test_print(&target, density),
+        Command::Feed { target } => cmd_feed(&target),
         Command::Discover => {
             cmd_discover();
             Ok(())
@@ -231,6 +244,15 @@ mod tests {
                 assert_eq!(density, 7);
             }
             _ => panic!("expected TestPrint"),
+        }
+    }
+
+    #[test]
+    fn parse_feed_with_target() {
+        let cli = Cli::try_parse_from(["supvan-cli", "feed", "/dev/hidraw3"]).unwrap();
+        match cli.command {
+            Command::Feed { target } => assert_eq!(target, "/dev/hidraw3"),
+            _ => panic!("expected Feed"),
         }
     }
 
