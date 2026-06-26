@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ipp_printer_app::{
-    DeviceBackend, JobContext, JobFailure, JobOutcome, PollStatus, PrinterConfig, PrinterReason,
-    PrinterRegistry, ReadyMedia, Server, ServerOptions, default_state_path,
+    DeviceBackend, DiscoveredDevice, JobContext, JobFailure, JobOutcome, PollStatus, PrinterConfig,
+    PrinterReason, PrinterRegistry, ReadyMedia, Server, ServerOptions, default_state_path,
 };
 use parking_lot::RwLock;
 
@@ -60,21 +60,25 @@ fn slug(name: &str) -> String {
     }
 }
 
+#[async_trait::async_trait]
 impl DeviceBackend for SupvanDeviceBackend {
-    fn list(&self, emit: &mut dyn FnMut(&str, &str, &str) -> bool) {
+    async fn list(&self) -> Vec<DiscoveredDevice> {
         if crate::util::is_mock_mode() {
             let family = models::default_family();
             let driver = family.driver_name.to_string_lossy();
             let mdl = String::from_utf8_lossy(&family.make_and_model).into_owned();
             let device_id = format!("MFG:Supvan;MDL:{mdl};CMD:KASCRIPT;");
-            emit("Supvan Mock", "mock://t50-001", &device_id);
             log::info!("mock discovery: emitted mock://t50-001 (driver={driver})");
-            return;
+            return vec![DiscoveredDevice {
+                info: "Supvan Mock".to_string(),
+                uri: "mock://t50-001".to_string(),
+                device_id,
+            }];
         }
 
         // Collect all candidates. USB probes RD_DEV_NAME silently per device;
         // BT pulls the firmware-reported name straight from BlueZ.
-        let usb = crate::usb_discover::list_candidates();
+        let usb = crate::usb_discover::list_candidates().await;
         let bt = crate::discover::list_candidates();
 
         // Group by printer-reported name. USB candidates carry their
@@ -117,6 +121,7 @@ impl DeviceBackend for SupvanDeviceBackend {
             by_name.get_mut(&bt_key).unwrap().0 = usb_entry;
         }
 
+        let mut out = Vec::new();
         for (name, (usb, bt)) in by_name {
             let model = usb
                 .as_ref()
@@ -137,14 +142,17 @@ impl DeviceBackend for SupvanDeviceBackend {
                 usb.as_ref().map(|u| u.hidraw_path.clone()),
                 bt.as_ref().map(|b| b.address.clone()),
             );
-            if !emit(&info, &uri, &device_id) {
-                break;
-            }
+            out.push(DiscoveredDevice {
+                info,
+                uri,
+                device_id,
+            });
         }
+        out
     }
 
-    fn poll_status(&self, config: &PrinterConfig) -> Option<PollStatus> {
-        let dev = crate::device::open_uri(&config.device_uri);
+    async fn poll_status(&self, config: &PrinterConfig) -> Option<PollStatus> {
+        let dev = crate::device::open_uri(&config.device_uri).await;
         let Some(dev) = dev else {
             // Device unreachable (powered off / unplugged / BT down). Report
             // OFFLINE so the framework marks us printer-state=stopped and CUPS
@@ -156,13 +164,13 @@ impl DeviceBackend for SupvanDeviceBackend {
             });
         };
 
-        let mut reasons = dev.status();
+        let mut reasons = dev.status().await;
         let mut ready_media = None;
         let mut supply_percent = None;
 
         // Material query: surfaces labels-remaining + roll-swap detection.
         // Skipped on mock devices (dev.material() returns None).
-        if let Some(mat) = dev.material() {
+        if let Some(mat) = dev.material().await {
             let fp = RollFingerprint {
                 uuid: mat.uuid.clone(),
                 code: mat.code.clone(),
@@ -230,13 +238,13 @@ impl DeviceBackend for SupvanDeviceBackend {
         })
     }
 
-    fn identify(&self, config: &PrinterConfig, actions: &[String]) {
+    async fn identify(&self, config: &PrinterConfig, actions: &[String]) {
         // Map Identify-Printer to a physical beep via CHECK_DEVICE. Any action
         // keyword (display/sound/flash) triggers the same buzzer. Mock devices
         // no-op on identify.
-        if let Some(dev) = crate::device::open_uri(&config.device_uri) {
+        if let Some(dev) = crate::device::open_uri(&config.device_uri).await {
             log::info!("identify {} (actions={actions:?})", config.name);
-            dev.identify();
+            dev.identify().await;
         }
     }
 
@@ -266,69 +274,76 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
     let state_path = default_state_path("supvan-printer-app");
     let backend = Arc::new(SupvanDeviceBackend);
 
-    Server::bootstrap_printers(&registry, backend.as_ref(), &state_path, config_from_family);
+    Server::bootstrap_printers(&registry, backend.as_ref(), &state_path, config_from_family).await;
 
     prune_stale_supvan(&registry);
     Server::persist(&registry, &state_path);
 
     let registry_print = registry.clone();
     let print_job = Arc::new(
-        move |ctx: JobContext, raster: &[u8], copies: u32| -> JobOutcome {
-            let cfg = {
-                let guard = registry_print.read();
-                match guard.iter().find(|p| p.config.name == ctx.printer_name) {
-                    Some(p) => p.config.clone(),
-                    None => {
-                        return JobOutcome::Failed(JobFailure::other(format!(
-                            "printer not found: {}",
-                            ctx.printer_name
-                        )));
+        move |ctx: JobContext, raster: Arc<[u8]>, copies: u32| -> ipp_printer_app::PrintJobFuture {
+            let registry_print = registry_print.clone();
+            Box::pin(async move {
+                let cfg = {
+                    let guard = registry_print.read();
+                    match guard.iter().find(|p| p.config.name == ctx.printer_name) {
+                        Some(p) => p.config.clone(),
+                        None => {
+                            return JobOutcome::Failed(JobFailure::other(format!(
+                                "printer not found: {}",
+                                ctx.printer_name
+                            )));
+                        }
                     }
+                };
+                // image/jpeg is decoded in-process (run_jpeg_job); everything else
+                // is CUPS/PWG raster (CUPS' driverless path already rasterizes).
+                let result = if ctx.document_format == "image/jpeg" {
+                    // Fallback when the config carries no media size: 40×30 mm,
+                    // expressed in hundredths of a millimetre.
+                    const DEFAULT_MEDIA_SIZE_HMM: [i32; 2] = [4000, 3000];
+                    let media_size = cfg
+                        .media_sizes
+                        .first()
+                        .copied()
+                        .unwrap_or(DEFAULT_MEDIA_SIZE_HMM);
+                    crate::ipp_job::run_jpeg_job(
+                        &cfg.name,
+                        &cfg.device_uri,
+                        cfg.darkness,
+                        cfg.printhead_width_dots,
+                        media_size,
+                        &raster,
+                        copies,
+                    )
+                    .await
+                } else {
+                    run_cups_raster_job(
+                        &cfg.name,
+                        &cfg.device_uri,
+                        cfg.darkness,
+                        cfg.printhead_width_dots,
+                        &cfg.driver_name,
+                        &raster,
+                        copies,
+                    )
+                    .await
+                };
+                match result {
+                    Ok(()) => JobOutcome::Completed,
+                    // A clearable physical condition — printer off / BT down, paper
+                    // jam, out of labels, cover open — should HOLD the job and let
+                    // the framework retry until it's resolved, not drop it (the way
+                    // a real printer holds a job through a jam). Anything else is a
+                    // permanent failure for this document.
+                    Err(f) if f.printer_reasons.is_recoverable() => {
+                        JobOutcome::DeviceUnavailable {
+                            reasons: f.printer_reasons,
+                        }
+                    }
+                    Err(f) => JobOutcome::Failed(f),
                 }
-            };
-            // image/jpeg is decoded in-process (run_jpeg_job); everything else
-            // is CUPS/PWG raster (CUPS' driverless path already rasterizes).
-            let result = if ctx.document_format == "image/jpeg" {
-                // Fallback when the config carries no media size: 40×30 mm,
-                // expressed in hundredths of a millimetre.
-                const DEFAULT_MEDIA_SIZE_HMM: [i32; 2] = [4000, 3000];
-                let media_size = cfg
-                    .media_sizes
-                    .first()
-                    .copied()
-                    .unwrap_or(DEFAULT_MEDIA_SIZE_HMM);
-                crate::ipp_job::run_jpeg_job(
-                    &cfg.name,
-                    &cfg.device_uri,
-                    cfg.darkness,
-                    cfg.printhead_width_dots,
-                    media_size,
-                    raster,
-                    copies,
-                )
-            } else {
-                run_cups_raster_job(
-                    &cfg.name,
-                    &cfg.device_uri,
-                    cfg.darkness,
-                    cfg.printhead_width_dots,
-                    &cfg.driver_name,
-                    raster,
-                    copies,
-                )
-            };
-            match result {
-                Ok(()) => JobOutcome::Completed,
-                // A clearable physical condition — printer off / BT down, paper
-                // jam, out of labels, cover open — should HOLD the job and let
-                // the framework retry until it's resolved, not drop it (the way
-                // a real printer holds a job through a jam). Anything else is a
-                // permanent failure for this document.
-                Err(f) if f.printer_reasons.is_recoverable() => JobOutcome::DeviceUnavailable {
-                    reasons: f.printer_reasons,
-                },
-                Err(f) => JobOutcome::Failed(f),
-            }
+            })
         },
     );
 

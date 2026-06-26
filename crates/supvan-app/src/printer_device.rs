@@ -1,9 +1,10 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use supvan_proto::error::{Error as ProtoError, Result as ProtoResult};
 use supvan_proto::printer::Printer;
 use supvan_proto::status::PrinterStatus;
+use tokio::sync::Mutex;
 
 use crate::util::is_mock_mode;
 
@@ -21,34 +22,34 @@ pub enum PrinterHandle {
 
 impl PrinterHandle {
     /// Query INQUIRY_STA, returning a parsed [`PrinterStatus`].
-    pub fn query_status(&self) -> ProtoResult<Option<PrinterStatus>> {
+    pub async fn query_status(&self) -> ProtoResult<Option<PrinterStatus>> {
         match self {
-            Self::Owned(p) => p.query_status(),
-            Self::Shared(arc) => arc.lock().unwrap().query_status(),
+            Self::Owned(p) => p.query_status().await,
+            Self::Shared(arc) => arc.lock().await.query_status().await,
         }
     }
 
     /// Query RETURN_MAT (loaded label + RFID + remaining count).
-    pub fn query_material(&self) -> ProtoResult<Option<supvan_proto::status::MaterialInfo>> {
+    pub async fn query_material(&self) -> ProtoResult<Option<supvan_proto::status::MaterialInfo>> {
         match self {
-            Self::Owned(p) => p.query_material(),
-            Self::Shared(arc) => arc.lock().unwrap().query_material(),
+            Self::Owned(p) => p.query_material().await,
+            Self::Shared(arc) => arc.lock().await.query_material().await,
         }
     }
 
     /// Stream the compressed raster + speed to the device.
-    pub fn print_compressed(&self, compressed: &[u8], speed: u16) -> ProtoResult<()> {
+    pub async fn print_compressed(&self, compressed: &[u8], speed: u16) -> ProtoResult<()> {
         match self {
-            Self::Owned(p) => p.print_compressed(compressed, speed),
-            Self::Shared(arc) => arc.lock().unwrap().print_compressed(compressed, speed),
+            Self::Owned(p) => p.print_compressed(compressed, speed).await,
+            Self::Shared(arc) => arc.lock().await.print_compressed(compressed, speed).await,
         }
     }
 
     /// CHECK_DEVICE — poke the device to confirm presence.
-    pub fn check_device(&self) -> ProtoResult<bool> {
+    pub async fn check_device(&self) -> ProtoResult<bool> {
         match self {
-            Self::Owned(p) => p.check_device(),
-            Self::Shared(arc) => arc.lock().unwrap().check_device(),
+            Self::Owned(p) => p.check_device().await,
+            Self::Shared(arc) => arc.lock().await.check_device().await,
         }
     }
 }
@@ -108,7 +109,7 @@ impl KsDevice {
     ///
     /// Returns `PrinterReason::empty()` while the printing flag is set
     /// (so we don't query a printer mid-transfer).
-    pub fn status(&self) -> ipp_printer_app::PrinterReason {
+    pub async fn status(&self) -> ipp_printer_app::PrinterReason {
         use ipp_printer_app::PrinterReason;
 
         let printer = match &self.printer {
@@ -120,7 +121,7 @@ impl KsDevice {
             return PrinterReason::empty();
         }
 
-        let status = match printer.query_status() {
+        let status = match printer.query_status().await {
             Ok(Some(s)) => s,
             Ok(None) => return PrinterReason::OTHER,
             Err(ProtoError::Io(_)) => {
@@ -146,12 +147,12 @@ impl KsDevice {
 
     /// Query loaded material / RFID tag info. Returns `None` if mock, mid-print,
     /// or the transport errored.
-    pub fn material(&self) -> Option<supvan_proto::status::MaterialInfo> {
+    pub async fn material(&self) -> Option<supvan_proto::status::MaterialInfo> {
         let printer = self.printer.as_ref()?;
         if self.printing.load(Ordering::Acquire) {
             return None;
         }
-        match printer.query_material() {
+        match printer.query_material().await {
             Ok(m) => m,
             Err(e) => {
                 log::debug!("KsDevice::material: query failed: {e}");
@@ -163,11 +164,11 @@ impl KsDevice {
     /// Identify-Printer: poke the device so it makes itself known. We send
     /// CHECK_DEVICE — the only presence primitive in the protocol; on Supvan
     /// hardware exercising the link makes the unit chirp. No-op on mock.
-    pub fn identify(&self) {
+    pub async fn identify(&self) {
         let Some(printer) = self.printer.as_ref() else {
             return;
         };
-        match printer.check_device() {
+        match printer.check_device().await {
             Ok(present) => log::info!("KsDevice::identify: check_device -> present={present}"),
             Err(e) => log::warn!("KsDevice::identify: check_device failed: {e}"),
         }

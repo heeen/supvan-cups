@@ -263,13 +263,20 @@ impl Drop for RfcommSocket {
     }
 }
 
+#[async_trait::async_trait]
 impl crate::spp_pipe::SppPipe for RfcommSocket {
-    fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>> {
-        self.send_cmd(frame)
+    async fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>> {
+        // Blocking libc socket I/O: run in place so concurrent tasks (status
+        // polling, IPP serving) migrate off this worker during the round-trip.
+        tokio::task::block_in_place(|| self.send_cmd(frame))
     }
 
-    fn send_data_frame(&self, frame: &[u8; 512], read_response: bool) -> Result<Option<Vec<u8>>> {
-        RfcommSocket::send_data_frame(self, frame, read_response)
+    async fn send_data_frame(
+        &self,
+        frame: &[u8; 512],
+        read_response: bool,
+    ) -> Result<Option<Vec<u8>>> {
+        tokio::task::block_in_place(|| RfcommSocket::send_data_frame(self, frame, read_response))
     }
 }
 

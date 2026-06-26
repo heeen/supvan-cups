@@ -7,3 +7,4 @@ edition.workspace = true
 supvan-proto.workspace = true
 env_logger.workspace = true
 clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

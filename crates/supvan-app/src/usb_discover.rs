@@ -38,12 +38,12 @@ pub struct UsbCandidate {
 /// can't carry a string — but `RETURN_MAT` (0x30) returns a 64-byte report
 /// whose offset-40 field holds the printer's serial as ASCII (matches the
 /// `Name` BlueZ exposes over BT). That's the cross-transport join key.
-fn probe_printer_name(hidraw_path: &str) -> Option<String> {
+async fn probe_printer_name(hidraw_path: &str) -> Option<String> {
     if is_mock_mode() {
         return None;
     }
     let printer = Printer::open_usb(hidraw_path).ok()?;
-    let mat = match printer.query_material() {
+    let mat = match printer.query_material().await {
         Ok(Some(m)) => m,
         Ok(None) => {
             log::warn!("usb_discover: {hidraw_path}: RETURN_MAT returned None");
@@ -64,8 +64,9 @@ fn probe_printer_name(hidraw_path: &str) -> Option<String> {
 
 /// Walk /sys/class/hidraw and return one [`UsbCandidate`] per Supvan device.
 /// Each entry's HID is briefly opened to read the printer-reported name.
-pub fn list_candidates() -> Vec<UsbCandidate> {
-    let mut out = Vec::new();
+pub async fn list_candidates() -> Vec<UsbCandidate> {
+    // First pass (sync sysfs walk): collect addressable Supvan hidraw devices.
+    let mut found = Vec::new();
     scan_hidraw_paths(|dev_path, ids| {
         let Some(model) = models::model_by_pid(&ids.pid) else {
             return true;
@@ -77,15 +78,20 @@ pub fn list_candidates() -> Vec<UsbCandidate> {
         } else {
             return true;
         };
-        let printer_name = probe_printer_name(dev_path);
-        out.push(UsbCandidate {
-            hidraw_path: dev_path.to_string(),
-            uri_id,
-            model_name: model.name.clone(),
-            printer_name,
-        });
+        found.push((dev_path.to_string(), model.name.clone(), uri_id));
         true
     });
+    // Second pass (async): probe each device's firmware-reported name.
+    let mut out = Vec::new();
+    for (hidraw_path, model_name, uri_id) in found {
+        let printer_name = probe_printer_name(&hidraw_path).await;
+        out.push(UsbCandidate {
+            hidraw_path,
+            uri_id,
+            model_name,
+            printer_name,
+        });
+    }
     out
 }
 

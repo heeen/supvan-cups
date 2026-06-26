@@ -53,7 +53,8 @@ fn find_serial(label: &str, bytes: &[u8], needle: &str) {
     }
 }
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 4 {
         eprintln!("usage: material_probe <hidraw> <bt_mac> <known_serial>");
@@ -72,10 +73,12 @@ fn main() {
 
     let usb_resp = usb_t
         .send_cmd(CMD_RETURN_MAT, 0)
+        .await
         .expect("usb send")
         .unwrap_or_default();
     let bt_resp = bt_t
         .send_cmd(CMD_RETURN_MAT, 0)
+        .await
         .expect("bt send")
         .unwrap_or_default();
 

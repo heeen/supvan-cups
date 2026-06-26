@@ -2,27 +2,39 @@
 
 use crate::error::Result;
 use crate::status::{MaterialInfo, PrinterStatus};
+use async_trait::async_trait;
 
 /// Abstraction over the physical transport to the printer.
 ///
 /// Both Bluetooth (RFCOMM socket, 0x7E/5A framing, 512-byte data frames)
 /// and USB HID (hidraw device, 0xC0/40 framing, 64-byte reports) implement
 /// this trait with their own command encoding, data framing, and response parsing.
-pub trait Transport: Send {
+///
+/// The I/O methods are async so a future BLE GATT transport (natively async via
+/// `bluer`) fits the same trait; the blocking RFCOMM/HID transports bridge their
+/// FFI calls with `tokio::task::block_in_place`. Response parsing stays sync —
+/// it's pure byte work with no I/O.
+#[async_trait]
+pub trait Transport: Send + Sync {
     /// Send a command with one parameter, return raw response.
-    fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>>;
+    async fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>>;
 
     /// Send a command with two parameters (used for NEXT_ZIPPEDBULK, BUF_FULL).
-    fn send_cmd_two(&self, cmd: u8, param1: u16, param2: u16) -> Result<Option<Vec<u8>>>;
+    async fn send_cmd_two(&self, cmd: u8, param1: u16, param2: u16) -> Result<Option<Vec<u8>>>;
 
     /// Send the NEXT_ZIPPEDBULK (0x5C) bulk-transfer header, encoded for this
     /// transport: SPP framing carries `(block_size=512, packet_count)`, USB HID
     /// carries the total compressed byte length. Returns the device ack.
-    fn send_bulk_header(&self, compressed_len: u16, num_packets: usize) -> Result<Option<Vec<u8>>>;
+    async fn send_bulk_header(
+        &self,
+        compressed_len: u16,
+        num_packets: usize,
+    ) -> Result<Option<Vec<u8>>>;
 
     /// Send bulk compressed data as transport-native frames.
     /// If `read_final_response` is true, reads and returns the response after the last frame.
-    fn send_bulk_data(&self, data: &[u8], read_final_response: bool) -> Result<Option<Vec<u8>>>;
+    async fn send_bulk_data(&self, data: &[u8], read_final_response: bool)
+    -> Result<Option<Vec<u8>>>;
 
     /// Parse a status response into PrinterStatus.
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus>;

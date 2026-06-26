@@ -61,16 +61,16 @@ fn connect(target: &str) -> Result<Printer, Box<dyn Error>> {
     Ok(printer)
 }
 
-fn cmd_probe(target: &str) -> CliResult {
+async fn cmd_probe(target: &str) -> CliResult {
     let printer = connect(target)?;
 
-    if printer.check_device()? {
+    if printer.check_device().await? {
         eprintln!("Device: OK");
     } else {
         return Err("device check: no response".into());
     }
 
-    if let Some(status) = printer.query_status()? {
+    if let Some(status) = printer.query_status().await? {
         eprintln!("Status:");
         eprintln!("  printing:     {}", status.printing);
         eprintln!("  device_busy:  {}", status.device_busy);
@@ -83,17 +83,17 @@ fn cmd_probe(target: &str) -> CliResult {
         }
     }
 
-    if let Some(name) = printer.read_device_name()? {
+    if let Some(name) = printer.read_device_name().await? {
         eprintln!("Device name: {name}");
     }
-    if let Some(fw) = printer.read_firmware_version()? {
+    if let Some(fw) = printer.read_firmware_version().await? {
         eprintln!("Firmware:    {fw}");
     }
-    if let Some(ver) = printer.read_version()? {
+    if let Some(ver) = printer.read_version().await? {
         eprintln!("Protocol:    {ver}");
     }
 
-    if let Some(mat) = printer.query_material()? {
+    if let Some(mat) = printer.query_material().await? {
         eprintln!("Material:");
         eprintln!("  Label:     {}mm x {}mm", mat.width_mm, mat.height_mm);
         eprintln!("  Type:      {}", mat.label_type);
@@ -111,15 +111,16 @@ fn cmd_probe(target: &str) -> CliResult {
     Ok(())
 }
 
-fn cmd_material(target: &str) -> CliResult {
+async fn cmd_material(target: &str) -> CliResult {
     let printer = connect(target)?;
 
-    if !printer.check_device()? {
+    if !printer.check_device().await? {
         return Err("device not responding".into());
     }
 
     let mat = printer
-        .query_material()?
+        .query_material()
+        .await?
         .ok_or("no material info (label not installed?)")?;
 
     println!(
@@ -140,12 +141,12 @@ fn cmd_material(target: &str) -> CliResult {
     Ok(())
 }
 
-fn cmd_test_print(target: &str, density: u8) -> CliResult {
+async fn cmd_test_print(target: &str, density: u8) -> CliResult {
     let printer = connect(target)?;
 
     // Query material to get label dimensions, falling back to printhead-width
     // defaults if no label is installed.
-    let mat = match printer.query_material()? {
+    let mat = match printer.query_material().await? {
         Some(m) => m,
         None => {
             eprintln!(
@@ -164,14 +165,14 @@ fn cmd_test_print(target: &str, density: u8) -> CliResult {
         "Printing test pattern on {}mm x {}mm label...",
         mat.width_mm, mat.height_mm
     );
-    printer.test_print(&mat, density)?;
+    printer.test_print(&mat, density).await?;
     eprintln!("Done.");
     Ok(())
 }
 
-fn cmd_feed(target: &str) -> CliResult {
+async fn cmd_feed(target: &str) -> CliResult {
     let printer = connect(target)?;
-    printer.paper_skip()?;
+    printer.paper_skip().await?;
     eprintln!("Fed one label.");
     Ok(())
 }
@@ -184,15 +185,16 @@ fn cmd_discover() {
     eprintln!("  bluetoothctl devices | grep -i 'T0117\\|T50\\|Supvan\\|Katasymbol'");
 }
 
-fn main() -> ExitCode {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Probe { target } => cmd_probe(&target),
-        Command::Material { target } => cmd_material(&target),
-        Command::TestPrint { target, density } => cmd_test_print(&target, density),
-        Command::Feed { target } => cmd_feed(&target),
+        Command::Probe { target } => cmd_probe(&target).await,
+        Command::Material { target } => cmd_material(&target).await,
+        Command::TestPrint { target, density } => cmd_test_print(&target, density).await,
+        Command::Feed { target } => cmd_feed(&target).await,
         Command::Discover => {
             cmd_discover();
             Ok(())

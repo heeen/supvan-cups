@@ -15,18 +15,24 @@ use crate::data::build_data_frames;
 use crate::error::Result;
 use crate::status::{self, MaterialInfo, PrinterStatus};
 use crate::transport::Transport;
+use async_trait::async_trait;
 
 /// SPP block size advertised in the `NEXT_ZIPPEDBULK` header.
 const SPP_BLOCK_SIZE: u16 = 512;
 
 /// Raw transport for pre-framed SPP frames.
-pub trait SppPipe: Send {
+#[async_trait]
+pub trait SppPipe: Send + Sync {
     /// Send a 16-byte command frame; return the device's raw response.
-    fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>>;
+    async fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>>;
 
     /// Send a 512-byte data frame. When `read_response` is set, read and return
     /// the device's response after the frame.
-    fn send_data_frame(&self, frame: &[u8; 512], read_response: bool) -> Result<Option<Vec<u8>>>;
+    async fn send_data_frame(
+        &self,
+        frame: &[u8; 512],
+        read_response: bool,
+    ) -> Result<Option<Vec<u8>>>;
 }
 
 /// Drives an [`SppPipe`] to implement the SPP-framed [`Transport`] protocol
@@ -41,21 +47,32 @@ impl<P: SppPipe> SppCodec<P> {
     }
 }
 
+#[async_trait]
 impl<P: SppPipe> Transport for SppCodec<P> {
-    fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>> {
-        self.pipe.send_cmd_frame(&make_cmd(cmd, param))
+    async fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>> {
+        self.pipe.send_cmd_frame(&make_cmd(cmd, param)).await
     }
 
-    fn send_cmd_two(&self, cmd: u8, param1: u16, param2: u16) -> Result<Option<Vec<u8>>> {
+    async fn send_cmd_two(&self, cmd: u8, param1: u16, param2: u16) -> Result<Option<Vec<u8>>> {
         self.pipe
             .send_cmd_frame(&make_cmd_start_trans(cmd, param1, param2))
+            .await
     }
 
-    fn send_bulk_header(&self, _compressed_len: u16, num_packets: usize) -> Result<Option<Vec<u8>>> {
+    async fn send_bulk_header(
+        &self,
+        _compressed_len: u16,
+        num_packets: usize,
+    ) -> Result<Option<Vec<u8>>> {
         self.send_cmd_two(CMD_NEXT_ZIPPEDBULK, SPP_BLOCK_SIZE, num_packets as u16)
+            .await
     }
 
-    fn send_bulk_data(&self, data: &[u8], read_final_response: bool) -> Result<Option<Vec<u8>>> {
+    async fn send_bulk_data(
+        &self,
+        data: &[u8],
+        read_final_response: bool,
+    ) -> Result<Option<Vec<u8>>> {
         // The Android reference (`BasePrint.transferSplitData(..., true, ...)`)
         // reads a response after EVERY data packet, not only the last. The
         // firmware acks each packet and expects us to drain that ack before the
@@ -65,7 +82,7 @@ impl<P: SppPipe> Transport for SppCodec<P> {
         for (i, frame) in frames.iter().enumerate() {
             let is_last = i == frames.len() - 1;
             let want_resp = if is_last { read_final_response } else { true };
-            let resp = self.pipe.send_data_frame(frame, want_resp)?;
+            let resp = self.pipe.send_data_frame(frame, want_resp).await?;
             if is_last {
                 last_resp = resp;
             }
