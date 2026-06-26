@@ -285,29 +285,45 @@ remaining-label counter (probably also somewhere in 30..50). The
 | `SET_RFID_DATA` (0x5D) | not exercised by any code path | We've never sent it. Firmware support unknown. |
 | `BUF_FULL` (0x10) handling | request side is implemented; what the device sends back when its buffer fills mid-print isn't fully decoded. | KsJob's per-packet ack loop handles the timing but doesn't surface a typed status. |
 
-## Appendix: BLE GATT transport (vendor app; not implemented here)
+## Appendix: BLE GATT transport (implemented behind the `ble` feature, unverified)
 
-We talk to the printers over Classic Bluetooth RFCOMM/SPP and USB HID. The
-vendor Android app *also* supports a BLE GATT transport, which we do **not**
-implement but document here for completeness (a future contributor could add
-it as another [`transport::Transport`] impl). The same 16-byte command framing
-rides over GATT notify/write characteristics:
+We reach the printers over three transports, all sharing the same 16-byte
+command framing and 512-byte data frames:
 
-- Classic SPP (what we use): RFCOMM UUID `00001101-0000-1000-8000-00805F9B34FB`,
+- **Classic SPP** (RFCOMM): UUID `00001101-0000-1000-8000-00805F9B34FB`,
   channel auto-detected; 512-byte write chunks, ~10 ms inter-chunk drain.
-- BLE GATT (vendor-only): MTU requested at 200; one of three service/char
-  patterns is auto-detected — `0000fee7-…` (notify == write `0000FEC1-…`),
-  `0000e0ff-3c17-…` (notify `0000ffe1-…`, write `0000ffe9-…`), or
-  `0000ff00-…` (notify `0000ff01-…`, write `0000ff02-…`); responses polled up
-  to ~4 s.
+- **USB HID**: `0xC0/0x40` framing, 64-byte reports.
+- **BLE GATT**: for BLE-only hardware (E11/E12-class — the vendor gates BLE by
+  `printingProcess == 4`). Implemented in `crates/supvan-proto/src/ble.rs` as a
+  `BlePipe` driven by the shared [`spp_pipe::SppCodec`]; built only with
+  `--features ble` (pulls `bluer` + BlueZ). **Unverified against hardware** — we
+  own no BLE printer, so an E11/E12 reporter must validate the live round-trip.
+
+BLE wire details (from the vendor `BLEUtils.java`, as implemented):
+
+- Connect TRANSPORT_LE; BlueZ negotiates the ATT MTU (the app requests 200).
+- Auto-detect one of three service/characteristic patterns, first match wins:
+  `0000fee7-…` (notify == write `0000FEC1-…`), service
+  `0000e0ff-3c17-d293-8e48-14fe2e4da212` (notify `0000ffe1-…`, write
+  `0000ffe9-…`), or `0000ff00-…` (notify `0000ff01-…`, write `0000ff02-…`).
+- Commands/status: write-with-response, then wait for a notification echoing the
+  command byte at **offset 7**, polled up to ~4 s (the app loops 200 × 20 ms).
+- Bulk image data: write-without-response, fragmented to ~MTU.
+- Discovery (`crates/supvan-app/src/ble_discover.rs`): unfiltered LE scan, keep
+  advertisers matching name `^[TGD]\d{2}` and MAC OUI `A4:93:40`.
+
+Known unknowns to confirm on real hardware: the 512-byte SPP frame fragmentation
+across BLE's smaller MTU, and whether the per-packet-ack drain behaves the same
+over GATT notifications as over the RFCOMM stream.
 
 ## See also
 
 - `crates/supvan-proto/src/cmd.rs` — command constants + frame builders.
 - `crates/supvan-proto/src/status.rs` — BT response parsers + bit
   assignments.
-- `crates/supvan-proto/src/bt_transport.rs` /
-  `crates/supvan-proto/src/usb_transport.rs` — Transport trait impls;
+- `crates/supvan-proto/src/spp_pipe.rs` — the `SppPipe` byte-pipe trait and the
+  shared `SppCodec` that drives Classic-BT (`rfcomm.rs`) and BLE (`ble.rs`).
+- `crates/supvan-proto/src/usb_transport.rs` — the USB HID `Transport` impl;
   the place where per-transport quirks land.
 - `crates/supvan-proto/src/printer.rs` — high-level Printer interface;
   one method per command code, returning the parsed shape.
