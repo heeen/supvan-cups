@@ -7,6 +7,13 @@ minor version).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-26
+
+Async transport stack + a feature-gated BLE GATT transport for BLE-only
+printers (E11/E12-class). Verified end-to-end on a T50M Pro over USB and
+Bluetooth-classic; the BLE path is implemented to the vendor spec but
+unverified against hardware.
+
 ### Added
 
 - `supvan-cli feed <target>` — advances one blank label via the `PAPER_SKIP`
