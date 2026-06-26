@@ -9,6 +9,7 @@
 //! takes no arguments; it is configured via `SUPVAN_*` environment variables.
 
 mod battery_provider;
+mod ble_discover;
 mod device;
 mod discover;
 mod dither;

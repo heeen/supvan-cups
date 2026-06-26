@@ -27,3 +27,11 @@ libc = "0.2"
 # JPEG decode for the image/jpeg document-format path (IPP Everywhere). Only
 # the jpeg codec is enabled to keep the build lean.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# BLE GATT discovery + transport (E11/E12-class printers). Off by default.
+bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
+futures-util = { version = "0.3", optional = true }
+
+[features]
+default = []
+# Enables BLE GATT discovery (LE scan) and the proto BLE transport.
+ble = ["dep:bluer", "dep:futures-util", "supvan-proto/ble"]

@@ -1419,10 +1419,12 @@ name = "supvan-app"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "bluer",
  "dbus",
  "dbus-crossroads",
  "env_logger",
  "futures",
+ "futures-util",
  "image",
  "ipp-printer-app",
  "libc",

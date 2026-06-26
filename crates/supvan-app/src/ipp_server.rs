@@ -9,6 +9,7 @@ use ipp_printer_app::{
 };
 use parking_lot::RwLock;
 
+use crate::ble_discover::BleCandidate;
 use crate::discover::BtCandidate;
 use crate::ipp_job::{config_from_family, run_cups_raster_job};
 use crate::models;
@@ -77,20 +78,22 @@ impl DeviceBackend for SupvanDeviceBackend {
         }
 
         // Collect all candidates. USB probes RD_DEV_NAME silently per device;
-        // BT pulls the firmware-reported name straight from BlueZ.
+        // BT pulls the firmware-reported name from BlueZ; BLE scans for
+        // E11/E12-class advertisers (no-op without the `ble` feature).
         let usb = crate::usb_discover::list_candidates().await;
         let bt = crate::discover::list_candidates();
+        let ble = crate::ble_discover::list_candidates().await;
 
         // Group by printer-reported name. USB candidates carry their
-        // `device_sn` (parsed from `RETURN_MAT` at offset 40); BT carries
-        // it as the BlueZ `Name` property. When both match, we collapse
-        // the two transports into one logical printer.
+        // `device_sn` (parsed from `RETURN_MAT` at offset 40); BT and BLE carry
+        // it as the advertised name. When they match, we collapse the
+        // transports into one logical printer.
         //
         // If a USB candidate failed to surface its serial (e.g. the device
         // was busy and RETURN_MAT didn't reply), fall back to its bus URI
         // as the group key. A final 1-USB-only + 1-BT-only sweep merges
         // them under the BT name to keep single-printer households tidy.
-        type Group = (Option<UsbCandidate>, Option<BtCandidate>);
+        type Group = (Option<UsbCandidate>, Option<BtCandidate>, Option<BleCandidate>);
         let mut by_name: BTreeMap<String, Group> = BTreeMap::new();
         for u in usb {
             let key = u.printer_name.clone().unwrap_or_else(|| u.uri_id.clone());
@@ -100,15 +103,19 @@ impl DeviceBackend for SupvanDeviceBackend {
             let key = b.name.clone();
             by_name.entry(key).or_default().1 = Some(b);
         }
+        for e in ble {
+            let key = e.name.clone();
+            by_name.entry(key).or_default().2 = Some(e);
+        }
 
         let usb_only: Vec<String> = by_name
             .iter()
-            .filter(|(_, (u, b))| u.is_some() && b.is_none())
+            .filter(|(_, (u, b, e))| u.is_some() && b.is_none() && e.is_none())
             .map(|(k, _)| k.clone())
             .collect();
         let bt_only: Vec<String> = by_name
             .iter()
-            .filter(|(_, (u, b))| u.is_none() && b.is_some())
+            .filter(|(_, (u, b, e))| u.is_none() && b.is_some() && e.is_none())
             .map(|(k, _)| k.clone())
             .collect();
         if usb_only.len() == 1 && bt_only.len() == 1 {
@@ -122,25 +129,28 @@ impl DeviceBackend for SupvanDeviceBackend {
         }
 
         let mut out = Vec::new();
-        for (name, (usb, bt)) in by_name {
+        for (name, (usb, bt, ble)) in by_name {
             let model = usb
                 .as_ref()
                 .map(|u| u.model_name.clone())
                 .or_else(|| bt.as_ref().map(|_| "T50 Series".to_string()))
+                .or_else(|| ble.as_ref().map(|_| "E-Series".to_string()))
                 .unwrap_or_else(|| "T50 Series".to_string());
             let info = format!("Supvan {model} {name}");
             let uri = format!("supvan://{}", slug(&name));
             let device_id = format!("MFG:Supvan;MDL:{model};CMD:SUPVAN;");
             log::info!(
-                "discover: emitting {uri} (usb={}, bt={})",
+                "discover: emitting {uri} (usb={}, bt={}, ble={})",
                 usb.is_some(),
                 bt.is_some(),
+                ble.is_some(),
             );
             // Register the name → transport mapping so open_supvan can resolve it.
             crate::device::register_supvan(
                 &slug(&name),
                 usb.as_ref().map(|u| u.hidraw_path.clone()),
                 bt.as_ref().map(|b| b.address.clone()),
+                ble.as_ref().map(|e| e.address.clone()),
             );
             out.push(DiscoveredDevice {
                 info,
