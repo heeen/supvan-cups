@@ -3,13 +3,12 @@
 //! Wraps an `RfcommSocket` and uses the existing 0x7E/5A command framing,
 //! 512-byte data frames, and BT-specific response parsing.
 
-use crate::cmd::{make_cmd, make_cmd_start_trans};
+use crate::cmd::{CMD_NEXT_ZIPPEDBULK, make_cmd, make_cmd_start_trans};
 use crate::data::build_data_frames;
 use crate::error::Result;
 use crate::rfcomm::RfcommSocket;
 use crate::status::{self, MaterialInfo, PrinterStatus};
 use crate::transport::Transport;
-use std::os::unix::io::RawFd;
 
 /// Bluetooth RFCOMM transport.
 pub struct BtTransport {
@@ -53,12 +52,9 @@ impl Transport for BtTransport {
         Ok(last_resp)
     }
 
-    fn raw_fd(&self) -> RawFd {
-        self.sock.raw_fd()
-    }
-
-    fn use_socket_io(&self) -> bool {
-        true
+    fn send_bulk_header(&self, _compressed_len: u16, num_packets: usize) -> Result<Option<Vec<u8>>> {
+        // SPP encodes NEXT_ZIPPEDBULK as (block_size=512, packet_count).
+        self.send_cmd_two(CMD_NEXT_ZIPPEDBULK, 512, num_packets as u16)
     }
 
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus> {

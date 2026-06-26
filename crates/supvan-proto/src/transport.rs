@@ -2,7 +2,6 @@
 
 use crate::error::Result;
 use crate::status::{MaterialInfo, PrinterStatus};
-use std::os::unix::io::RawFd;
 
 /// Abstraction over the physical transport to the printer.
 ///
@@ -16,15 +15,14 @@ pub trait Transport: Send {
     /// Send a command with two parameters (used for NEXT_ZIPPEDBULK, BUF_FULL).
     fn send_cmd_two(&self, cmd: u8, param1: u16, param2: u16) -> Result<Option<Vec<u8>>>;
 
+    /// Send the NEXT_ZIPPEDBULK (0x5C) bulk-transfer header, encoded for this
+    /// transport: SPP framing carries `(block_size=512, packet_count)`, USB HID
+    /// carries the total compressed byte length. Returns the device ack.
+    fn send_bulk_header(&self, compressed_len: u16, num_packets: usize) -> Result<Option<Vec<u8>>>;
+
     /// Send bulk compressed data as transport-native frames.
     /// If `read_final_response` is true, reads and returns the response after the last frame.
     fn send_bulk_data(&self, data: &[u8], read_final_response: bool) -> Result<Option<Vec<u8>>>;
-
-    /// Return the raw file descriptor of the underlying device.
-    fn raw_fd(&self) -> RawFd;
-
-    /// Whether this transport uses socket I/O (recv/send) vs file I/O (read/write).
-    fn use_socket_io(&self) -> bool;
 
     /// Parse a status response into PrinterStatus.
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus>;

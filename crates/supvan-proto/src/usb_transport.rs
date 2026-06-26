@@ -7,7 +7,6 @@ use crate::error::Result;
 use crate::hidraw::{HID_REPORT_SIZE, HidrawDevice};
 use crate::status::{MaterialInfo, PrinterStatus};
 use crate::transport::Transport;
-use std::os::unix::io::RawFd;
 use std::time::Duration;
 
 /// USB HID command magic bytes.
@@ -162,12 +161,9 @@ impl Transport for UsbHidTransport {
         Ok(None)
     }
 
-    fn raw_fd(&self) -> RawFd {
-        self.dev.raw_fd()
-    }
-
-    fn use_socket_io(&self) -> bool {
-        false
+    fn send_bulk_header(&self, compressed_len: u16, _num_packets: usize) -> Result<Option<Vec<u8>>> {
+        // USB HID encodes NEXT_ZIPPEDBULK as the total compressed byte length.
+        self.send_cmd(crate::cmd::CMD_NEXT_ZIPPEDBULK, compressed_len)
     }
 
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus> {

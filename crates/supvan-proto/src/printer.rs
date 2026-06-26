@@ -10,7 +10,6 @@ use crate::error::{Error, Result};
 use crate::speed::calc_speed;
 use crate::status::{MaterialInfo, PrinterStatus};
 use crate::transport::Transport;
-use std::os::unix::io::RawFd;
 use std::time::Duration;
 
 /// Status-poll attempt budgets for the print state machine; each is multiplied
@@ -57,16 +56,6 @@ impl Printer {
         } else {
             Self::open_bt(target)
         }
-    }
-
-    /// Return the raw file descriptor of the underlying transport.
-    pub fn raw_fd(&self) -> RawFd {
-        self.transport.raw_fd()
-    }
-
-    /// Whether the transport uses socket I/O (recv/send) vs file I/O (read/write).
-    pub fn use_socket_io(&self) -> bool {
-        self.transport.use_socket_io()
     }
 
     /// CHECK_DEVICE (0x12) - verify printer is present.
@@ -205,24 +194,16 @@ impl Printer {
     pub fn transfer_compressed(&self, compressed: &[u8], speed: u16) -> Result<()> {
         let compressed_len = compressed.len() as u16;
 
-        // CMD_NEXT_ZIPPEDBULK (0x5C):
-        //   BT:  SendCmdTwo(0x5C, block_size=512, block_count)
-        //   USB: SendCmd(0x5C, total_length)
-        let resp = if self.transport.use_socket_io() {
-            let num_packets = compressed.len().div_ceil(DATA_PAYLOAD_SIZE);
-            log::info!(
-                "transfer: {} bytes, {} packets, speed={}",
-                compressed.len(),
-                num_packets,
-                speed
-            );
-            self.transport
-                .send_cmd_two(CMD_NEXT_ZIPPEDBULK, 512, num_packets as u16)?
-        } else {
-            log::info!("transfer: {} bytes, speed={}", compressed.len(), speed);
-            self.transport
-                .send_cmd(CMD_NEXT_ZIPPEDBULK, compressed_len)?
-        };
+        // CMD_NEXT_ZIPPEDBULK (0x5C): each transport encodes the header in its
+        // own convention (SPP: block_size=512 + packet count; USB: total length).
+        let num_packets = compressed.len().div_ceil(DATA_PAYLOAD_SIZE);
+        log::info!(
+            "transfer: {} bytes, {} packets, speed={}",
+            compressed.len(),
+            num_packets,
+            speed
+        );
+        let resp = self.transport.send_bulk_header(compressed_len, num_packets)?;
         if resp.is_none() {
             return Err(Error::InvalidResponse(
                 "no response to NEXT_ZIPPEDBULK".into(),
