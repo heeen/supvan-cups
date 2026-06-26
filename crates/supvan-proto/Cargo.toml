@@ -7,6 +7,15 @@ edition.workspace = true
 log.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "sync"] }
 liblzma = "0.4"
 libc = "0.2"
+uuid = "1"
+# BLE GATT transport (E11/E12-class printers). Off by default — pulls bluer +
+# BlueZ build deps. Enable with `--features ble`.
+bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
+futures-util = { version = "0.3", optional = true }
+
+[features]
+default = []
+ble = ["dep:bluer", "dep:futures-util"]

@@ -46,6 +46,15 @@ impl Printer {
         Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(sock))))
     }
 
+    /// Open a BLE GATT printer by address (E11/E12-class hardware). Async
+    /// because the `bluer` GATT client is natively async. Requires the `ble`
+    /// feature.
+    #[cfg(feature = "ble")]
+    pub async fn open_ble(addr: &str) -> Result<Self> {
+        let pipe = crate::ble::BlePipe::connect(addr).await?;
+        Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(pipe))))
+    }
+
     /// Open a printer from a target string: a `/dev/hidrawN` path selects USB
     /// HID, anything else is treated as a Bluetooth address.
     pub fn open_target(target: &str) -> Result<Self> {

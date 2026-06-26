@@ -16,6 +16,9 @@ pub enum Error {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("BLE error: {0}")]
+    Ble(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
