@@ -43,9 +43,7 @@ impl Printer {
     /// Open a Bluetooth printer at the given RFCOMM address (`AA:BB:CC:DD:EE:FF`).
     pub fn open_bt(addr: &str) -> Result<Self> {
         let sock = crate::rfcomm::RfcommSocket::connect_default(addr)?;
-        Ok(Self::new(Box::new(crate::bt_transport::BtTransport::new(
-            sock,
-        ))))
+        Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(sock))))
     }
 
     /// Open a printer from a target string: a `/dev/hidrawN` path selects USB

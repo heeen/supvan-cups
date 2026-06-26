@@ -263,6 +263,16 @@ impl Drop for RfcommSocket {
     }
 }
 
+impl crate::spp_pipe::SppPipe for RfcommSocket {
+    fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>> {
+        self.send_cmd(frame)
+    }
+
+    fn send_data_frame(&self, frame: &[u8; 512], read_response: bool) -> Result<Option<Vec<u8>>> {
+        RfcommSocket::send_data_frame(self, frame, read_response)
+    }
+}
+
 /// Parse a Bluetooth address string "XX:XX:XX:XX:XX:XX" into 6 bytes.
 /// BlueZ uses reversed byte order (LSB first).
 fn parse_bdaddr(addr: &str) -> Result<[u8; 6]> {
