@@ -1,10 +1,12 @@
 //! BLE discovery: scan for Supvan/Katasymbol BLE-only printers (E11/E12-class).
 //!
-//! Mirrors the vendor app's filter: an unfiltered LE scan, then keep devices
-//! whose advertised name matches `^[TGD]\d{2}` and whose address is in the
-//! Supvan MAC OUI `A4:93:40`. The advertised name (e.g. `T0182A2507162197`) is
-//! the same firmware serial-name used to cross-correlate USB/BT/BLE transports
-//! for one physical printer.
+//! An **LE-transport** scan, keeping devices that (a) advertise a Supvan GATT
+//! service (`fee7`/`e0ff`/`ff00` — the actual BLE-print signature), (b) match
+//! name `^[TGD]\d{2}`, and (c) sit in the Supvan MAC OUI `A4:93:40`. The GATT-
+//! service requirement is what distinguishes a real BLE printer from a classic
+//! SPP one (Serial Port `1101` only) that BlueZ may echo into discovery. The
+//! advertised name (e.g. `T0182A2507162197`) is the firmware serial-name used
+//! to cross-correlate USB/BT/BLE transports for one physical printer.
 //!
 //! Gated behind the `ble` feature; without it `list_candidates` is a stub that
 //! returns nothing, so discovery wiring compiles on BlueZ-free CI.
@@ -57,9 +59,11 @@ pub async fn list_candidates() -> Vec<BleCandidate> {
 
 #[cfg(feature = "ble")]
 async fn scan() -> bluer::Result<Vec<BleCandidate>> {
+    use bluer::{DiscoveryFilter, DiscoveryTransport};
     use futures_util::StreamExt;
     use std::collections::HashSet;
     use std::time::Duration;
+    use supvan_proto::ble::chars_for_service;
 
     /// How long to listen for advertisements before reporting.
     const SCAN_WINDOW: Duration = Duration::from_secs(4);
@@ -67,6 +71,14 @@ async fn scan() -> bluer::Result<Vec<BleCandidate>> {
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
+    // Restrict discovery to LE so BlueZ doesn't surface classic (BR/EDR)
+    // devices — a classic SPP printer must never look like a BLE candidate.
+    adapter
+        .set_discovery_filter(DiscoveryFilter {
+            transport: DiscoveryTransport::Le,
+            ..Default::default()
+        })
+        .await?;
 
     let mut events = adapter.discover_devices().await?;
     let mut out = Vec::new();
@@ -85,7 +97,18 @@ async fn scan() -> bluer::Result<Vec<BleCandidate>> {
                 continue;
             };
             let name = dev.name().await.ok().flatten().unwrap_or_default();
-            if is_supvan_ble(&astr, &name) && seen.insert(astr.clone()) {
+            // Definitive discriminator: the device must advertise a Supvan GATT
+            // service (fee7/e0ff/ff00). Classic printers expose only SPP (Serial
+            // Port 1101) and are excluded here even if BlueZ echoes them.
+            let advertises_gatt = dev
+                .uuids()
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .iter()
+                .any(|u| chars_for_service(*u).is_some());
+            if advertises_gatt && is_supvan_ble(&astr, &name) && seen.insert(astr.clone()) {
                 log::info!("ble_discover: found {name} ({astr})");
                 out.push(BleCandidate { address: astr, name });
             }

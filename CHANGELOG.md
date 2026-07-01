@@ -7,6 +7,17 @@ minor version).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-01
+
+### Fixed
+
+- **BLE discovery no longer false-positives classic printers.** `ble_discover`
+  now runs an LE-transport scan and requires the device to advertise a Supvan
+  GATT service (`fee7`/`e0ff`/`ff00`) — the real BLE-print signature — instead
+  of matching on name + OUI alone. Classic SPP printers (which expose only
+  Serial Port `1101`) are correctly excluded, so a Classic-Bluetooth T50-series
+  printer is no longer reported with `ble=true`.
+
 ## [0.4.0] - 2026-07-01
 
 ### Changed
