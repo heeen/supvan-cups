@@ -18,6 +18,10 @@ pub const CMD_PAPER_SKIP: u8 = 0x2E;
 pub const CMD_RETURN_MAT: u8 = 0x30;
 pub const CMD_NEXT_ZIPPEDBULK: u8 = 0x5C;
 pub const CMD_READ_FWVER: u8 = 0xC5;
+/// Firmware-transfer start (`sendCmdStartTrans(0xC6, 512, num_chunks)`), the
+/// firmware analogue of `NEXT_ZIPPEDBULK`. Followed by `0xAA 0xC7` firmware
+/// packets. See [`crate::data::build_firmware_frames`] and `docs/FIRMWARE.md`.
+pub const CMD_UPDATE_FW: u8 = 0xC6;
 
 /// Build a standard 16-byte command frame (0x7E 0x5A format).
 ///

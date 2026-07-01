@@ -7,6 +7,23 @@ minor version).
 
 ## [Unreleased]
 
+### Added
+
+- **Firmware tooling (foundation).** `docs/FIRMWARE.md` documents the vendor's
+  firmware check/download API (`api.supvan.com/api/upload/GetFirmwareFile`, no
+  auth) and the T50-family flash protocol. New `data::build_firmware_frames` +
+  `cmd::CMD_UPDATE_FW` (0xC6) provide the flash framing (`0xAA 0xC7` packets,
+  reusing the print frame layout); the live flash is intentionally left to a
+  caller (destructive, no on-device verification on T50). `scripts/supvan-fw-check.py`
+  checks/downloads firmware for a given model + serial.
+
+### Fixed
+
+- `data::make_data_packet` checksum summed into `u16`, which could panic on a
+  debug build for high-entropy (compressed) payloads whose byte-sum exceeds
+  65535. Now sums in `u32` and truncates to the low 16 bits (matching the
+  device); release-build checksum values are unchanged.
+
 ## [0.4.1] - 2026-07-01
 
 ### Fixed

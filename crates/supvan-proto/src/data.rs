@@ -4,6 +4,12 @@ use crate::cmd::{DATA_TYPE, MAGIC1, MAGIC2, PROTO_ID};
 pub const DATA_MAGIC1: u8 = 0xAA;
 pub const DATA_MAGIC2: u8 = 0xBB;
 
+/// Firmware-packet marker (byte 1). A firmware transfer reuses the exact
+/// 506-byte packet + 512-byte frame layout as print data, but marks each packet
+/// `0xAA 0xC7` instead of `0xAA 0xBB`. The marker sits outside the checksum
+/// range (`[4..506]`), so it doesn't affect the packet checksum.
+pub const FIRMWARE_MAGIC2: u8 = 0xC7;
+
 /// Max payload per data packet.
 pub const DATA_PAYLOAD_SIZE: usize = 500;
 
@@ -29,7 +35,10 @@ pub fn make_data_packet(data_chunk: &[u8], pkt_idx: u8, pkt_total: u8) -> [u8; 5
     let copy_len = data_chunk.len().min(DATA_PAYLOAD_SIZE);
     pkt[6..6 + copy_len].copy_from_slice(&data_chunk[..copy_len]);
 
-    let chk: u16 = pkt[4..506].iter().map(|&b| b as u16).sum();
+    // Checksum = low 16 bits of the byte sum over [4..506] (the vendor keeps
+    // `(byte)sum` + `(byte)(sum>>8)`). Sum in u32 to avoid a debug overflow
+    // panic on high-entropy payloads; `as u16` truncates to the low 16 bits.
+    let chk = pkt[4..506].iter().map(|&b| b as u32).sum::<u32>() as u16;
     pkt[2..4].copy_from_slice(&chk.to_le_bytes());
     pkt
 }
@@ -67,6 +76,33 @@ pub fn build_data_frames(compressed: &[u8]) -> Vec<[u8; 512]> {
         let end = (offset + DATA_PAYLOAD_SIZE).min(compressed.len());
         let chunk = &compressed[offset..end];
         let pkt = make_data_packet(chunk, i as u8, pkt_total);
+        frames.push(wrap_data_frame(&pkt));
+    }
+
+    frames
+}
+
+/// Split **raw firmware** into 512-byte transfer frames for a firmware flash.
+///
+/// Identical framing to [`build_data_frames`] except each packet carries the
+/// firmware marker ([`FIRMWARE_MAGIC2`], `0xC7`) and the bytes are raw (a
+/// firmware image is not LZMA-compressed like print buffers).
+///
+/// A flasher sends `send_cmd_two(`[`cmd::CMD_UPDATE_FW`](crate::cmd::CMD_UPDATE_FW)`, 512, frames.len())`,
+/// then each returned frame in order with a per-packet ack (the same drain the
+/// print bulk path uses). This is a framing primitive only — the flash is
+/// destructive and there is no on-device verification on T50-class printers, so
+/// the live send is deliberately left to a caller (see `docs/FIRMWARE.md`).
+pub fn build_firmware_frames(firmware: &[u8]) -> Vec<[u8; 512]> {
+    let num_packets = firmware.len().div_ceil(DATA_PAYLOAD_SIZE);
+    let pkt_total = num_packets as u8;
+    let mut frames = Vec::with_capacity(num_packets);
+
+    for i in 0..num_packets {
+        let offset = i * DATA_PAYLOAD_SIZE;
+        let end = (offset + DATA_PAYLOAD_SIZE).min(firmware.len());
+        let mut pkt = make_data_packet(&firmware[offset..end], i as u8, pkt_total);
+        pkt[1] = FIRMWARE_MAGIC2; // outside the checksum range — no recompute
         frames.push(wrap_data_frame(&pkt));
     }
 
@@ -126,5 +162,47 @@ mod tests {
         assert_eq!(frames[0][6 + 5], 3); // pkt_total
         assert_eq!(frames[1][6 + 4], 1);
         assert_eq!(frames[2][6 + 4], 2);
+    }
+
+    #[test]
+    fn test_build_firmware_frames_layout() {
+        // 1100 raw bytes -> 3 firmware packets (500+500+100).
+        let fw = vec![0x42u8; 1100];
+        let frames = build_firmware_frames(&fw);
+        assert_eq!(frames.len(), 3);
+        for (i, frame) in frames.iter().enumerate() {
+            // Frame header is the standard 0x7E5A data transfer frame.
+            assert_eq!(frame[0], MAGIC1);
+            assert_eq!(frame[1], MAGIC2);
+            assert_eq!(frame[5], DATA_TYPE);
+            // Packet is 0xAA 0xC7 (firmware marker, not 0xBB).
+            assert_eq!(frame[6], DATA_MAGIC1);
+            assert_eq!(frame[6 + 1], FIRMWARE_MAGIC2);
+            assert_eq!(frame[6 + 4], i as u8); // pkt_idx
+            assert_eq!(frame[6 + 5], 3); // pkt_total
+        }
+    }
+
+    #[test]
+    fn test_firmware_checksum_matches_vendor() {
+        // The vendor sums bytes [4..506) of the 506-byte packet (idx, total,
+        // payload) — the 0xC7 marker at [1] is excluded, so a firmware packet's
+        // checksum equals the same packet's as a print packet.
+        let fw = vec![0x37u8; 500];
+        let frame = &build_firmware_frames(&fw)[0];
+        let pkt = &frame[6..512]; // the 506-byte packet
+        let chk = pkt[4..506].iter().map(|&b| b as u32).sum::<u32>() as u16;
+        assert_eq!(pkt[2], (chk & 0xFF) as u8);
+        assert_eq!(pkt[3], (chk >> 8) as u8);
+    }
+
+    #[test]
+    fn test_firmware_last_packet_zero_padded() {
+        let fw = vec![0xABu8; 500 + 3]; // 2 packets, last has 3 bytes
+        let frames = build_firmware_frames(&fw);
+        assert_eq!(frames.len(), 2);
+        let last = &frames[1];
+        assert_eq!(&last[6 + 6..6 + 6 + 3], &[0xAB; 3]); // 3 payload bytes
+        assert_eq!(&last[6 + 6 + 3..512], &[0x00; 497]); // rest zero-padded
     }
 }
