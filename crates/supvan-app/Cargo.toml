@@ -32,6 +32,8 @@ bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
 futures-util = { version = "0.3", optional = true }
 
 [features]
-default = []
+# BLE is on by default so the app ships GATT support out of the box; disable
+# with --no-default-features for a BlueZ-free build.
+default = ["ble"]
 # Enables BLE GATT discovery (LE scan) and the proto BLE transport.
 ble = ["dep:bluer", "dep:futures-util", "supvan-proto/ble"]

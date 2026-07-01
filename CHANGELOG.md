@@ -7,6 +7,16 @@ minor version).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-01
+
+### Changed
+
+- **BLE GATT support is now enabled by default** in `supvan-printer-app` (the
+  `ble` feature is in the default set). Default builds pull `bluer` and need
+  BlueZ build deps; use `--no-default-features` for a BlueZ-free build. The
+  `supvan-proto` library and standalone `supvan-cli` keep BLE opt-in. The live
+  BLE device path remains unverified pending E11/E12 hardware.
+
 ## [0.3.0] - 2026-06-26
 
 Async transport stack + a feature-gated BLE GATT transport for BLE-only
