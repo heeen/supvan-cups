@@ -23,6 +23,38 @@ pub const CMD_READ_FWVER: u8 = 0xC5;
 /// packets. See [`crate::data::build_firmware_frames`] and `docs/FIRMWARE.md`.
 pub const CMD_UPDATE_FW: u8 = 0xC6;
 
+// --- Additional opcodes recovered from the vendor Linux tool (Electron source
+// map, `com.supvan.supvaneditor` 1.1.4). Not all are exercised by the T50
+// family — model applicability and used/reserved status noted per opcode. We
+// don't drive these yet; kept as a complete vocabulary. See docs/PROTOCOL.md.
+
+/// CHECK_RIB (0x19) — check ribbon. Defined in the vendor tool; no active call
+/// site observed.
+pub const CMD_CHECK_RIB: u8 = 0x19;
+
+/// RD_LAB_DPI (0x22) — read the loaded label's DPI (response carries DPI×100 as
+/// a little-endian u16; the offset varies per material). Used by the G/TP/MP50
+/// plugins. `0x24`/`0x25` are per-material read variants.
+pub const CMD_RD_LAB_DPI: u8 = 0x22;
+pub const CMD_RD_LAB_DPI_24: u8 = 0x24;
+pub const CMD_RD_LAB_DPI_25: u8 = 0x25;
+
+/// SET_PRTMODE (0x33) — set print mode. MP50/P70-family in the vendor tool.
+pub const CMD_SET_PRTMODE: u8 = 0x33;
+
+/// SEND_INF (0x35) — set print density. MP50/P70-family in the vendor tool.
+pub const CMD_SEND_INF: u8 = 0x35;
+
+/// SET_RFID_DATA (0x5D) — authenticate/write label RFID data; the `RfidData`
+/// payload follows as a bulk write. Used by the T50 and MP50 plugins. Payload
+/// format not yet decoded (see docs/PROTOCOL.md known gaps).
+pub const CMD_SET_RFID_DATA: u8 = 0x5D;
+
+/// TRANSFER (0xF0) — "传输字模" (dot-pattern transfer). **Reserved**: defined
+/// in the vendor tool but never sent; the live bitmap path is
+/// [`CMD_NEXT_ZIPPEDBULK`]. Possibly an alternate transfer mode/model.
+pub const CMD_TRANSFER: u8 = 0xF0;
+
 /// Build a standard 16-byte command frame (0x7E 0x5A format).
 ///
 /// Layout:

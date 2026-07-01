@@ -7,6 +7,19 @@ minor version).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-01
+
+### Added
+
+- Completed the command-opcode vocabulary in `cmd.rs` from the vendor Linux
+  tool's source map (`com.supvan.supvaneditor` 1.1.4): `CHECK_RIB` (0x19),
+  `RD_LAB_DPI`/`_24`/`_25` (0x22/0x24/0x25), `SET_PRTMODE` (0x33), `SEND_INF`
+  (0x35), `SET_RFID_DATA` (0x5D), `TRANSFER` (0xF0, reserved/unused). These are
+  constants only — we don't drive them yet (response parsing needs on-device
+  verification). `docs/PROTOCOL.md` documents each plus the `FirmwareNeedUpgrade`
+  status flag and the confirmation that `0xF0` is a reserved dot-pattern-transfer
+  opcode (the live bitmap path stays `NEXT_ZIPPEDBULK` 0x5C).
+
 ## [0.5.0] - 2026-07-01
 
 ### Added

@@ -175,6 +175,33 @@ output-only (no parsed response).
 | 0x5C | NEXT_ZIPPEDBULK     | host → device   | uses `make_cmd_start_trans`; signals next block of zipped raster | same | — |
 | 0x5D | SET_RFID_DATA       | host → device   | not yet exercised         | not yet exercised            | — |
 | 0xC5 | READ_FWVER          | host ↔ device   | ≥23-byte frame; firmware byte at [22] | **stub** (8-byte)  | `parse_firmware_version`           |
+| 0xC6 | UPDATE_FW           | host → device   | firmware-transfer start (`0xAA 0xC7` packets follow) | same | `build_firmware_frames`; see docs/FIRMWARE.md |
+
+### Extended opcodes (from the vendor Linux tool)
+
+The vendor Linux editor (`com.supvan.supvaneditor` 1.1.4, Electron) ships an
+un-minified **source map** that confirms the vocabulary above and adds the codes
+below. We keep them as `cmd::CMD_*` constants but do not drive them yet —
+response parsing needs on-device verification (the tool's byte offsets are for
+its own USB/serial framing, not our 22-byte-header BT frames).
+
+| Code | Name | Notes |
+|------|------|-------|
+| 0x19 | CHECK_RIB   | check ribbon; defined but no active call site |
+| 0x22 | RD_LAB_DPI  | read label DPI (response = DPI×100 as LE u16); G/TP/MP50 |
+| 0x24 / 0x25 | RD_LAB_DPI_24/25 | per-material DPI read variants (sp plugin) |
+| 0x33 | SET_PRTMODE | set print mode; MP50/P70 only |
+| 0x35 | SEND_INF    | set print density; MP50/P70 only |
+| 0xF0 | TRANSFER    | "传输字模" (dot-pattern transfer); **reserved** — defined but never sent (the live bitmap path is `NEXT_ZIPPEDBULK` 0x5C). `字模` here is the raster dot-pattern, not typographic fonts. |
+
+`0x11` doubles as `INQUIRY_STA` and a `FINISH_PRINT` marker; `0x14` doubles as
+`STOP_PRINT` / `RESET_PRINT`.
+
+**Status flag — `FirmwareNeedUpgrade`.** The Linux tool decodes a "firmware
+needs upgrade" flag from status byte `[3] & 0x20` (G-series `gPrintFlag.js`) —
+the printer itself signals stale firmware, a natural trigger for a future
+updater. The exact byte offset in our BT/USB status frames is unverified, so
+`status.rs` does not decode it yet.
 
 ### Print pipeline glue
 
