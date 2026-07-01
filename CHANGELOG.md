@@ -7,6 +7,8 @@ minor version).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-01
+
 ### Added
 
 - **Firmware tooling (foundation).** `docs/FIRMWARE.md` documents the vendor's
