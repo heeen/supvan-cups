@@ -125,6 +125,11 @@ pid = "2077"
 name = "T50s Pro"
 family = "supvan_t50"
 
+[[models]]
+pid = "207f"
+name = "T50 Pro"
+family = "supvan_t50"
+
 # T80 family
 [[models]]
 pid = "2075"

@@ -7,6 +7,15 @@ minor version).
 
 ## [Unreleased]
 
+### Added
+
+- **T50 Pro (`1820:207f`) over USB.** The model registry and the udev rules both
+  stopped at `2077`, and an unlisted PID is not merely unnamed: `usb.rs` skips it
+  outright (`models::model_by_pid` returning `None` fails the candidate scan), so
+  the printer was never discovered at all. Without the udev rule its hidraw node
+  is also left `0600 root:root` with no `uaccess` tag, so a user-scoped printer
+  application cannot open it. Verified on a T50 Pro over USB.
+
 ### Fixed
 
 - **Contone rasters printed solid black.** The IPP layer advertises `SRGB24`,

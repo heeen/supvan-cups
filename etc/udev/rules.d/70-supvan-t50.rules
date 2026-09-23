@@ -5,6 +5,7 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2073", MODE="06
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2074", MODE="0660", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2076", MODE="0660", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2077", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="207f", MODE="0660", TAG+="uaccess"
 # T80 family
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="2075", MODE="0660", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1820", ATTRS{idProduct}=="207a", MODE="0660", TAG+="uaccess"
