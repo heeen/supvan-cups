@@ -9,6 +9,17 @@ minor version).
 
 ### Fixed
 
+- **A page longer than four print buffers printed only its first block's
+  worth.** Packing capped a compressed block at `bufferMAXCount = 4` buffers, a
+  value read from the T80 Pro while `T50PlusPrint.multiCompression()` resisted
+  decompilation. The T50 family's own encoder is in the desktop app's bundled
+  JS, where the dispatch is explicit — `isT5080(getDevType(ProductId))` reaches
+  webpack module `45ac`, which packs **32** buffers per block and shrinks the
+  group by a quarter per retry. `isT5080` covers the T80 family too, so both
+  share that encoder. A 50×80 mm page is 8 buffers: at 32 it leaves as one block
+  and prints whole; at 4 it split in two and the printer laid down only the
+  first, accepted and acknowledged, `completed` in CUPS, no error flag. Verified
+  on a T50 Pro (`1820:207f`) over USB.
 - **Contone rasters printed solid black.** The IPP layer advertises `SRGB24`,
   so a Ghostscript-rendered text label arrives as 24 bpp; only 8 bpp was
   dithered, and 24 bpp had its raw RGB copied into the 1-bit page buffer, where
