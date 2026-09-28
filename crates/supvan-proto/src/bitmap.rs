@@ -225,6 +225,113 @@ pub fn create_test_pattern(label_width_mm: u32, height_mm: u32) -> (Vec<u8>, u32
     (buf, canvas_width_dots, height_dots, bytes_per_line)
 }
 
+/// Create a test pattern using profile-specific printhead geometry and margins.
+///
+/// This leaves the existing T-series reference function untouched while
+/// allowing E-series test prints to use their 96-dot / 12-byte printhead.
+pub fn create_test_pattern_profiled(
+    label_width_mm: u32,
+    height_mm: u32,
+    printhead_dots: u32,
+    profile: crate::profile::PrintProfile,
+) -> (Vec<u8>, u32, u32, u32) {
+    assert!(
+        printhead_dots > 0 && printhead_dots.is_multiple_of(8),
+        "printhead width {printhead_dots} must be a positive multiple of 8 dots"
+    );
+
+    let canvas_width_dots = printhead_dots;
+    let height_dots = height_mm * DOTS_PER_MM;
+    let bytes_per_line = canvas_width_dots / 8;
+
+    let label_width_dots = (label_width_mm * DOTS_PER_MM).min(canvas_width_dots);
+    let x_offset = (canvas_width_dots - label_width_dots) / 2;
+
+    let margin_top = profile.params().margin_dots as u32;
+    let margin_bottom = profile.params().margin_dots as u32;
+    let max_cols =
+        (profile.params().max_buf_data / bytes_per_line as usize) as u32;
+
+    let mut buf_regions: Vec<(u32, u32)> = Vec::new();
+    let mut col = margin_top;
+
+    while col < height_dots - margin_bottom {
+        let end = (col + max_cols).min(height_dots - margin_bottom);
+        buf_regions.push((col, end));
+        col = end;
+    }
+
+    let mut buf = vec![0u8; bytes_per_line as usize * height_dots as usize];
+
+    for col in 0..height_dots {
+        for row in 0..canvas_width_dots {
+            let mut pixel = false;
+
+            let label_row = row as i32 - x_offset as i32;
+
+            if label_row >= 0 && (label_row as u32) < label_width_dots {
+                let lr = label_row as u32;
+
+                if lr < 2
+                    || lr >= label_width_dots - 2
+                    || col < 2
+                    || col >= height_dots - 2
+                {
+                    pixel = true;
+                }
+
+                for (i, &(bs, be)) in buf_regions.iter().enumerate() {
+                    if col >= bs && col < be {
+                        let bh = be - bs;
+                        let bw = label_width_dots;
+                        let local_col = col - bs;
+
+                        if local_col < 2 || local_col >= bh - 2 {
+                            pixel = true;
+                        }
+
+                        if let Some(expected_row_1) = (local_col * bw).checked_div(bh) {
+                            if (lr as i32 - expected_row_1 as i32).unsigned_abs() < 2 {
+                                pixel = true;
+                            }
+
+                            let expected_row_2 = bw - 1 - expected_row_1;
+
+                            if (lr as i32 - expected_row_2 as i32).unsigned_abs() < 2 {
+                                pixel = true;
+                            }
+                        }
+
+                        for d in 0..=i as u32 {
+                            let dx = 10 + d * 12;
+                            let dy: u32 = 10;
+
+                            if lr >= dx
+                                && lr < dx + 8
+                                && local_col >= dy
+                                && local_col < dy + 8
+                            {
+                                pixel = true;
+                            }
+                        }
+
+                        break;
+                    }
+                }
+            }
+
+            if pixel {
+                let byte_idx =
+                    col as usize * bytes_per_line as usize + (row / 8) as usize;
+                let bit_idx = row % 8;
+                buf[byte_idx] |= 1 << bit_idx;
+            }
+        }
+    }
+
+    (buf, canvas_width_dots, height_dots, bytes_per_line)
+}
+
 /// Unprinted trailing columns in each swatch band, so neighbouring bands that
 /// happen to burn the same shade are still countable.
 const SWATCH_SEPARATOR_DOTS: u32 = 4;

@@ -21,6 +21,7 @@ pub mod dither;
 pub mod error;
 pub mod hidraw;
 pub mod printer;
+pub mod profile;
 pub mod rfcomm;
 pub mod rfid;
 pub mod speed;

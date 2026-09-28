@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use supvan_proto::printer::Printer;
+use supvan_proto::profile::PrintProfile;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::battery_provider;
@@ -112,6 +113,7 @@ pub fn open_mock(_uri: &str) -> Option<KsDevice> {
 /// consulted by [`open_supvan`] / [`poll_status`].
 #[derive(Clone, Default)]
 struct SupvanTransports {
+    model_name: String,
     hidraw_path: Option<String>,
     bt_address: Option<String>,
     ble_address: Option<String>,
@@ -127,6 +129,7 @@ fn supvan_map() -> &'static Mutex<HashMap<String, SupvanTransports>> {
 /// discovery cycle.
 pub fn register_supvan(
     slug: &str,
+    model_name: String,
     hidraw_path: Option<String>,
     bt_address: Option<String>,
     ble_address: Option<String>,
@@ -134,6 +137,7 @@ pub fn register_supvan(
     supvan_map().lock().unwrap().insert(
         slug.to_string(),
         SupvanTransports {
+            model_name,
             hidraw_path,
             bt_address,
             ble_address,
@@ -163,7 +167,7 @@ pub async fn open_supvan(uri: &str) -> Option<KsDevice> {
         log::warn!("open_supvan: BT open failed for {slug} ({addr}), trying BLE");
     }
     if let Some(addr) = entry.ble_address.as_deref() {
-        return open_ble_addr(addr).await.map(|b| *b);
+        return open_ble_addr(addr, &entry.model_name).await.map(|b| *b);
     }
     log::warn!("open_supvan: no transports for {slug}");
     None
@@ -172,7 +176,7 @@ pub async fn open_supvan(uri: &str) -> Option<KsDevice> {
 /// Open a BLE printer by address, reusing a cached GATT connection. Stub
 /// (returns `None`) without the `ble` feature.
 #[cfg(feature = "ble")]
-async fn open_ble_addr(addr: &str) -> Option<Box<KsDevice>> {
+async fn open_ble_addr(addr: &str, model_name: &str) -> Option<Box<KsDevice>> {
     let cached = ble_cache().lock().unwrap().get(addr).cloned();
     let printer = match cached {
         Some(arc) => {
@@ -182,16 +186,22 @@ async fn open_ble_addr(addr: &str) -> Option<Box<KsDevice>> {
             } else {
                 log::info!("device::open_ble: cached connection for {addr} dead, reconnecting");
                 ble_cache().lock().unwrap().remove(addr);
-                dial_ble_and_cache(addr).await?
+                dial_ble_and_cache(addr, model_name).await?
             }
         }
-        None => dial_ble_and_cache(addr).await?,
+        None => dial_ble_and_cache(addr, model_name).await?,
     };
+
+    if model_name == "E11" {
+        log::info!("device::open_ble: selecting E-series profile for E11");
+        printer.lock().await.set_profile(PrintProfile::ESeries);
+    }
+
     Some(Box::new(KsDevice::from_shared(printer)))
 }
 
 #[cfg(not(feature = "ble"))]
-async fn open_ble_addr(addr: &str) -> Option<Box<KsDevice>> {
+async fn open_ble_addr(addr: &str, _model_name: &str) -> Option<Box<KsDevice>> {
     log::warn!("device: BLE address {addr} registered but the `ble` feature is off");
     None
 }
@@ -204,7 +214,10 @@ fn ble_cache() -> &'static Mutex<HashMap<String, Arc<AsyncMutex<Printer>>>> {
 }
 
 #[cfg(feature = "ble")]
-async fn dial_ble_and_cache(addr: &str) -> Option<Arc<AsyncMutex<Printer>>> {
+async fn dial_ble_and_cache(
+    addr: &str,
+    _model_name: &str,
+) -> Option<Arc<AsyncMutex<Printer>>> {
     log::info!("device::open_ble: connecting {addr} (no cache entry)");
     let printer = match Printer::open_ble(addr).await {
         Ok(p) => p,

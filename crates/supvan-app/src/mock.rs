@@ -130,7 +130,11 @@ impl MockController {
         if self.fail_repeat {
             *g = self.fail_template.clone();
         }
-        Some(failure_from_status(&parsed.status, "mock"))
+        Some(failure_from_status(
+            &parsed.status,
+            supvan_proto::profile::PrintProfile::TSeries,
+            "mock",
+        ))
     }
 
     /// Sticky `printer-state-reasons`, surfaced by `KsDevice::status`.
@@ -165,7 +169,10 @@ fn parse_status(s: &str) -> ParsedStatus {
         }
     }
     ParsedStatus {
-        reasons: reasons_from_status(&status) | extra,
+        reasons: reasons_from_status(
+            &status,
+            supvan_proto::profile::PrintProfile::TSeries,
+        ) | extra,
         status,
     }
 }

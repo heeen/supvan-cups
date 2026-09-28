@@ -8,6 +8,7 @@ use crate::buffer::{ColourMode, Density, PageOptions};
 use crate::cmd::*;
 use crate::data::DATA_PAYLOAD_SIZE;
 use crate::error::{Error, Result};
+use crate::profile::PrintProfile;
 use crate::speed::calc_speed;
 use crate::status::{MaterialInfo, PrinterStatus};
 use crate::transport::Transport;
@@ -41,11 +42,20 @@ fn ble_target(target: &str) -> Option<&str> {
 /// High-level printer interface over a pluggable transport.
 pub struct Printer {
     transport: Box<dyn Transport>,
+    profile: PrintProfile,
 }
 
 impl Printer {
     pub fn new(transport: Box<dyn Transport>) -> Self {
-        Self { transport }
+        Self { transport, profile: PrintProfile::default() }
+    }
+
+    pub fn set_profile(&mut self, profile: PrintProfile) {
+        self.profile = profile;
+    }
+
+    pub fn profile(&self) -> PrintProfile {
+        self.profile
     }
 
     /// Open a USB HID printer at the given `/dev/hidrawN` path.
@@ -264,6 +274,25 @@ impl Printer {
         Ok(None)
     }
 
+    /// Apply profile-specific interpretation to printer error flags.
+    ///
+    /// E-series captures show `ribbon_end` asserted during normal thermal
+    /// printing, so it is not fatal for that profile. All other existing
+    /// error flags retain their current meaning.
+    fn has_fatal_error(&self, s: &PrinterStatus) -> bool {
+        if !matches!(self.profile, PrintProfile::ESeries) {
+            return s.has_error();
+        }
+
+        s.label_rw_error
+            || s.label_end
+            || s.label_mode_error
+            || s.ribbon_rw_error
+            || s.cover_open
+            || s.head_temp_high
+            || s.label_not_installed
+    }
+
     /// Wait for printing station to become active.
     ///
     /// Aborts early via `Error::InvalidResponse` if the printer raises an
@@ -274,7 +303,7 @@ impl Printer {
         for _ in 0..max_attempts {
             let st = self.query_status().await?;
             if let Some(ref s) = st {
-                if s.has_error() {
+                if self.has_fatal_error(s) {
                     return Err(Error::InvalidResponse(format!(
                         "printer error after START_PRINT: {}",
                         s.error_description().unwrap_or_default()
@@ -295,7 +324,7 @@ impl Printer {
             tokio::time::sleep(Duration::from_millis(20)).await;
             let st = self.query_status().await?;
             if let Some(ref s) = st {
-                if s.has_error() {
+                if self.has_fatal_error(s) {
                     return Err(Error::InvalidResponse(format!(
                         "printer error while waiting for buffer: {}",
                         s.error_description().unwrap_or_default()
@@ -354,10 +383,15 @@ impl Printer {
         // leaving `buf_full` stuck set.
         tokio::time::sleep(BLOCK_SETTLE).await;
 
-        // CMD_BUF_FULL: param=compressed_length, param2=speed
-        log::info!("BUF_FULL: len={}, speed={}", compressed_len, speed);
+        // CMD_BUF_FULL parameters are profile-dependent.
+        let (buf_len, buf_speed) = if self.profile.params().buf_full_reports_length {
+            (compressed_len, speed)
+        } else {
+            (0, 0)
+        };
+        log::info!("BUF_FULL: len={}, speed={}", buf_len, buf_speed);
         self.transport
-            .send_cmd_two(CMD_BUF_FULL, compressed_len, speed)
+            .send_cmd_two(CMD_BUF_FULL, buf_len, buf_speed)
             .await?;
 
         // `buf_full` only rises once the firmware has taken the block in.
@@ -408,20 +442,27 @@ impl Printer {
             .wait_ready(READY_ATTEMPTS)
             .await?
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for device ready".into()))?;
-        if status.has_error() {
+        if self.has_fatal_error(&status) {
             return Err(Error::InvalidResponse(format!(
                 "printer error: {}",
                 status.error_description().unwrap_or_default()
             )));
         }
 
-        // Step 3: Start print
+        // Step 3: Optional profile-specific pre-start command, then START_PRINT.
+        if let Some((cmd, param)) = self.profile.params().pre_start_cmd {
+            self.transport.send_cmd(cmd, param).await?;
+        }
         self.start_print().await?;
 
         // Step 4: Wait printing station
         self.wait_printing(PRINTING_ATTEMPTS)
             .await?
             .ok_or_else(|| Error::InvalidResponse("timeout waiting for printing station".into()))?;
+
+        if let Some((cmd, param)) = self.profile.params().post_start_cmd {
+            self.transport.send_cmd(cmd, param).await?;
+        }
 
         // Step 5: Transfer one block per print buffer, waiting for room before
         // each. `buf_full` is the firmware's flow control — it decompresses
@@ -440,7 +481,7 @@ impl Printer {
                         blocks.len()
                     ))
                 })?;
-            if buf_status.has_error() {
+            if self.has_fatal_error(&buf_status) {
                 self.stop_print().await?;
                 return Err(Error::InvalidResponse(format!(
                     "printer error: {}",
@@ -479,7 +520,7 @@ impl Printer {
             tokio::time::sleep(COMPLETION_POLL_INTERVAL).await;
             if let Some(s) = self.query_status().await? {
                 log::debug!("completion poll: {}", s.summary());
-                if s.has_error() {
+                if self.has_fatal_error(&s) {
                     return Err(Error::InvalidResponse(format!(
                         "printer error while printing: {}",
                         s.error_description().unwrap_or_default()
@@ -524,6 +565,45 @@ impl Printer {
         } else {
             mat.height_mm as u32
         };
+
+        if matches!(self.profile, PrintProfile::ESeries) {
+            let printhead_dots = self.profile.params().default_printhead_dots;
+            let label_width_mm = (mat.width_mm as u32)
+                .min(printhead_dots / crate::bitmap::DOTS_PER_MM);
+            let margin = self.profile.params().margin_dots;
+
+            let (image_data, _w, h, bpl) =
+                crate::bitmap::create_test_pattern_profiled(
+                    label_width_mm,
+                    height_mm,
+                    printhead_dots,
+                    self.profile,
+                );
+
+            let buffers = crate::buffer::split_into_buffers_profiled(
+                &image_data,
+                bpl as u8,
+                h as u16,
+                margin,
+                margin,
+                density,
+                page,
+                self.profile,
+            );
+
+            log::info!(
+                "E-series test print: {}mm x {}mm, {} buffers",
+                label_width_mm,
+                height_mm,
+                buffers.len()
+            );
+
+            let (compressed, avg) =
+                crate::compress::compress_buffers_individually(&buffers)?;
+            let speed = calc_speed(avg);
+
+            return self.print_compressed(&compressed, speed).await;
+        }
 
         log::info!(
             "test print: {}mm x {}mm, black={} red={}, save_paper={}",

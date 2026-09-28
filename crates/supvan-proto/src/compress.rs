@@ -151,6 +151,34 @@ pub fn compress_buffers(
     Ok((blocks, avg))
 }
 
+/// Compress profile-sized buffers one-at-a-time.
+///
+/// E-series printers expect exactly one LZMA stream per print buffer.
+pub fn compress_buffers_individually(
+    buffers: &[Vec<u8>],
+) -> Result<(Vec<Vec<u8>>, usize)> {
+    if buffers.is_empty() {
+        return Err(Error::InvalidParam("no buffers to compress".into()));
+    }
+
+    let mut blocks = Vec::with_capacity(buffers.len());
+
+    for buffer in buffers {
+        blocks.push(compress_lzma(buffer)?);
+    }
+
+    let avg = blocks.iter().map(Vec::len).sum::<usize>() / buffers.len();
+
+    log::debug!(
+        "compress individually: {} buffers -> {} block(s) {:?}",
+        buffers.len(),
+        blocks.len(),
+        blocks.iter().map(Vec::len).collect::<Vec<_>>()
+    );
+
+    Ok((blocks, avg))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +234,22 @@ mod tests {
 
     /// A group too big compressed shrinks until it fits, rather than being
     /// sent over the receive-buffer size.
+    #[test]
+    fn e_series_buffers_compress_individually() {
+        let buffers = vec![
+            vec![0x11u8; 4000],
+            vec![0x22u8; 4000],
+        ];
+
+        let (blocks, avg) = compress_buffers_individually(&buffers).unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        assert!(avg > 0);
+
+        assert_eq!(decompress_lzma(&blocks[0]).unwrap(), buffers[0]);
+        assert_eq!(decompress_lzma(&blocks[1]).unwrap(), buffers[1]);
+    }
+
     #[test]
     fn oversized_groups_shrink_to_fit() {
         // Pseudo-random bytes: LZMA cannot shrink these, so four together

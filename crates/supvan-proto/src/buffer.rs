@@ -1,3 +1,5 @@
+use crate::profile::PrintProfile;
+
 /// Max image data bytes per print buffer (from Android R2.drawable.sf5334_).
 pub const MAX_BUF_DATA: usize = 4074;
 
@@ -604,5 +606,179 @@ mod tests {
             PageOptions::default(),
         );
         assert_eq!(plain, banded);
+    }
+}
+
+/// Build a print buffer using model-specific protocol parameters.
+///
+/// Kept separate from build_print_buffer so the established T-series path
+/// remains unchanged while E-series support is verified.
+pub fn build_print_buffer_profiled(
+    p: &PrintBufferParams,
+    profile: PrintProfile,
+    first_buffer: bool,
+) -> Vec<u8> {
+    let params = profile.params();
+    let mut buf = vec![0u8; params.buf_size];
+
+    let black = p.density.black.min(params.max_density);
+    let red = if first_buffer || !params.density_on_first_buffer_only {
+        p.density.red.min(params.max_density)
+    } else {
+        0
+    };
+
+    let page_bits = build_page_reg_bits(&PageRegBits {
+        page_st: p.page_st,
+        page_end: p.page_end,
+        prt_end: p.prt_end,
+        nodu: params.nodu.unwrap_or(black),
+        mat: params.mat,
+        first_cut: p.page.colour.first_cut(),
+        savepaper: p.page.save_paper,
+        ..Default::default()
+    });
+
+    buf[2] = page_bits[0];
+    buf[3] = page_bits[1];
+
+    buf[4..6].copy_from_slice(&p.cols_in_buf.to_le_bytes());
+    buf[6] = p.per_line_byte;
+
+    let mt = p.margin_top.clamp(1, MARGIN_MAX_DOTS);
+    let mb = p.margin_bottom.clamp(1, MARGIN_MAX_DOTS);
+    buf[8..10].copy_from_slice(&mt.to_le_bytes());
+    buf[10..12].copy_from_slice(&mb.to_le_bytes());
+
+    buf[12] = red;
+
+    let data_len = p.image_data.len().min(params.max_buf_data);
+    buf[PRINT_BUF_HEADER..PRINT_BUF_HEADER + data_len]
+        .copy_from_slice(&p.image_data[..data_len]);
+
+    let data_end =
+        (p.cols_in_buf as usize) * (p.per_line_byte as usize) + PRINT_BUF_HEADER;
+
+    let mut chk: u32 = buf[2..14].iter().map(|&b| b as u32).sum();
+    let n_strides = data_end / CHECKSUM_STRIDE;
+
+    for i in 1..=n_strides {
+        let idx = i * CHECKSUM_STRIDE - 1;
+        if idx < buf.len() {
+            chk += buf[idx] as u32;
+        }
+    }
+
+    buf[0..2].copy_from_slice(&(chk as u16).to_le_bytes());
+
+    buf
+}
+
+/// Split a single-density image using model-specific buffer parameters.
+///
+/// This parallels split_into_buffers but returns dynamically sized buffers,
+/// allowing E-series 4000-byte buffers while retaining the existing T-series
+/// implementation unchanged.
+pub fn split_into_buffers_profiled(
+    image_data: &[u8],
+    per_line_byte: u8,
+    total_cols: u16,
+    margin_top: u16,
+    margin_bottom: u16,
+    density: Density,
+    page: PageOptions,
+    profile: PrintProfile,
+) -> Vec<Vec<u8>> {
+    let planes = page.colour.planes();
+    let col_stride = per_line_byte as usize * planes as usize;
+    let max_cols = (profile.params().max_buf_data / col_stride) as u16;
+
+    let mut buffers = Vec::new();
+    let mut cols_remaining = total_cols - margin_top - margin_bottom;
+    let mut current_col: u16 = 0;
+
+    while cols_remaining > 0 {
+        let cols_in_buf = cols_remaining.min(max_cols);
+        let is_first = current_col == 0;
+        let is_last = cols_remaining <= max_cols;
+
+        let img_start = (margin_top + current_col) as usize * col_stride;
+        let img_end = img_start + cols_in_buf as usize * col_stride;
+
+        let img_chunk = image_data
+            .get(img_start..img_end.min(image_data.len()))
+            .unwrap_or(&[]);
+
+        let buf = build_print_buffer_profiled(
+            &PrintBufferParams {
+                image_data: img_chunk,
+                per_line_byte,
+                cols_in_buf: cols_in_buf * planes,
+                page_st: is_first,
+                page_end: is_last,
+                prt_end: is_last,
+                margin_top,
+                margin_bottom,
+                density,
+                page,
+            },
+            profile,
+            is_first,
+        );
+
+        buffers.push(buf);
+        current_col += cols_in_buf;
+        cols_remaining -= cols_in_buf;
+    }
+
+    buffers
+}
+
+#[cfg(test)]
+mod e_series_profile_tests {
+    use super::*;
+    use crate::profile::PrintProfile;
+
+    #[test]
+    fn e_series_split_matches_captured_geometry() {
+        const IMAGE_COLS: u16 = 373;
+        const PER_LINE: u8 = 12;
+
+        let margin = PrintProfile::ESeries.params().margin_dots;
+        let total_cols = IMAGE_COLS + margin * 2;
+
+        let image = vec![0u8; total_cols as usize * PER_LINE as usize];
+
+        let buffers = split_into_buffers_profiled(
+            &image,
+            PER_LINE,
+            total_cols,
+            margin,
+            margin,
+            Density::uniform(19),
+            PageOptions::default(),
+            PrintProfile::ESeries,
+        );
+
+        assert_eq!(buffers.len(), 2);
+
+        assert_eq!(buffers[0].len(), 4000);
+        assert_eq!(buffers[1].len(), 4000);
+
+        assert_eq!(
+            u16::from_le_bytes([buffers[0][4], buffers[0][5]]),
+            332
+        );
+
+        assert_eq!(
+            u16::from_le_bytes([buffers[1][4], buffers[1][5]]),
+            41
+        );
+
+        assert_eq!(buffers[0][3], 0x10);
+        assert_eq!(buffers[1][3], 0x10);
+
+        assert_eq!(buffers[0][12], 19);
+        assert_eq!(buffers[1][12], 0);
     }
 }

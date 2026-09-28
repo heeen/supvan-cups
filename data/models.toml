@@ -18,6 +18,18 @@ media_mm = [
     [50, 30],
 ]
 
+# E11 geometry is provisional. 96 printable dots is the hardware-tested
+# value currently known to produce coherent output on the development E11.
+# Only the physically verified 15 x 50 mm media is advertised at this stage.
+[[families]]
+name = "supvan_e11"
+description = "Supvan E11"
+dpi = 203
+printhead_dots = 96
+media_mm = [
+    [15, 50],
+]
+
 [[families]]
 name = "supvan_t80"
 description = "Supvan T80 Series"
@@ -281,7 +293,7 @@ prefixes = [
 
 [[bt_names]]
 model = "E11"
-family = "supvan_t50"
+family = "supvan_e11"
 prefixes = [
     "e11", "t0138", "t0139", "t0181", "t0182", "t0183", "t0184", "t0216",
     "t0217", "t0218", "t0219"

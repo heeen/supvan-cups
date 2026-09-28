@@ -157,7 +157,7 @@ mod imp {
         /// the vendor app writes every frame with response.
         async fn write_chunked(&self, data: &[u8]) -> Result<()> {
             let req = CharacteristicWriteRequest {
-                op_type: WriteOp::Request,
+                op_type: WriteOp::Command,
                 ..Default::default()
             };
             for (i, chunk) in data.chunks(BLE_CHUNK).enumerate() {

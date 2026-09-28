@@ -387,7 +387,7 @@ mod tests {
         let f = family_for_model_hint("T80M Pro");
         assert_eq!(f.driver_name.to_str().unwrap(), "supvan_t80");
         let f = family_for_model_hint("E11");
-        assert_eq!(f.driver_name.to_str().unwrap(), "supvan_t50");
+        assert_eq!(f.driver_name.to_str().unwrap(), "supvan_e11");
     }
 
     #[test]

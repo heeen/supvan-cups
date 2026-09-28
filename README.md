@@ -1,3 +1,215 @@
+<!-- E11-FORK-NOTICE -->
+
+# supvan-cups E11 BLE support fork
+
+This repository is a development fork of
+[heeen/supvan-cups](https://github.com/heeen/supvan-cups), created by
+Florian Hänel (`heeen`).
+
+The original project, architecture, protocol implementation, IPP/CUPS
+integration, diagnostic tooling and the great majority of this codebase are
+Florian Hänel's work. This fork remains under the original MIT licence and
+retains the upstream licence and commit history.
+
+Upstream project:
+
+- https://github.com/heeen/supvan-cups
+- Author: Florian Hänel (`heeen`)
+- Licence: MIT
+
+## Purpose of this fork
+
+The immediate purpose of this fork is to add and experimentally verify working
+Bluetooth Low Energy printing support for the Supvan/Katasymbol E11 label
+printer.
+
+Upstream already contained BLE transport support and documented the E11/E12
+class as BLE-only hardware, but the live E-series print flow had not been
+verified on physical E11 hardware. The E11 also identifies itself internally as
+`G15`, which makes model-based E-series selection unreliable.
+
+Development and testing for this fork has been performed against a physical
+Supvan/Katasymbol E11 with:
+
+- BLE advertising-name prefix: `T0183...`
+- GATT service: `0000fee7-0000-1000-8000-00805f9b34fb`
+- characteristic: `0000fec1-0000-1000-8000-00805f9b34fb`
+- reported device name: `G15`
+- reported material: 15 mm × 50 mm
+
+## Additional prior work credited
+
+The E-series implementation also draws on experimental work in:
+
+- https://github.com/huntj88/supvan-cups
+- branch: `feat/e-series-support`
+
+That work provided E10pro observations derived from a vendor-app Bluetooth HCI
+capture, including important differences between the normal T-series print
+path and the E-series path.
+
+Those E10pro observations were treated as hypotheses for the E11 and then
+tested individually against physical E11 hardware rather than assumed to be
+universally correct.
+
+## Changes in this fork
+
+Relative to the upstream baseline used for this work
+(`9fd7af09580c3e710202e5471e77e0b88db0e3bb`), this fork currently adds:
+
+- BLE GATT writes using write-without-response where required by the E11's
+  characteristic.
+- An explicit `PrintProfile` abstraction separating T-series and E-series
+  protocol behaviour.
+- E-series print-buffer geometry and buffer construction.
+- E-series 4000-byte buffers with profile-specific payload limits.
+- Per-buffer LZMA compression for E-series printing.
+- E-series `BUF_FULL(0, 0)` behaviour.
+- Profile-specific pre-start and post-start commands derived from E-series
+  observations.
+- Profile-aware test-pattern geometry.
+- An explicit `supvan-cli test-print --e-series` option so E-series mode can be
+  selected even though the E11 reports its internal device name as `G15`.
+- E-series-specific interpretation of the `ribbon_end` status bit during
+  thermal printing.
+- Automatic selection of the E-series profile for discovered E11 BLE devices,
+  without relying on the printer's misleading internal `G15` device name.
+- A provisional E11 model family with 203 dpi geometry and the physically
+  verified 15 mm x 50 mm media definition.
+- Profile-aware IPP print-buffer construction and per-buffer E-series LZMA
+  compression.
+- Profile-aware IPP status and error handling, including non-fatal E-series
+  `ribbon_end` behaviour.
+- E-series media-status handling that does not treat the E11's observed
+  `remaining=0` material counter alone as `media-empty`.
+- End-to-end CUPS/IPP printing support verified from a normal desktop
+  application through BLE to the physical E11.
+
+## Physical E11 verification
+
+The following has now been demonstrated on a physical E11 over BLE:
+
+1. Device connection and GATT discovery.
+2. Status, device-name, firmware and material queries.
+3. Entry into the E-series print sequence.
+4. Transfer of multiple compressed print buffers.
+5. Correct use of `BUF_FULL(0, 0)` without the buffer deadlock seen with the
+   T-series flow.
+6. Successful completion of a two-buffer thermal test print.
+7. Coherent printed raster geometry rather than corrupted or random data.
+8. Normal print completion despite the E11 asserting the status bit decoded as
+   `ribbon_end` during printing.
+9. E11 discovery and model selection through the IPP printer application.
+10. DNS-SD/Avahi advertisement as a Supvan E11 IPP Everywhere printer.
+11. CUPS submission of a real print job through the IPP service.
+12. Correct reporting of loaded 15 mm x 50 mm media without a false
+    `media-empty` condition.
+13. Physical printing from LibreOffice Writer through a permanent driverless
+    CUPS queue.
+14. Standard IPP Landscape orientation producing the expected left-to-right
+    printing along the label ribbon.
+
+The successful protocol test used two separately compressed E-series buffers
+and completed with the printer returning to an idle state. Subsequent desktop
+tests verified the complete application -> CUPS -> IPP -> BLE -> E11 path.
+
+## Verified CUPS and desktop printing
+
+The E11 has also been verified end-to-end through the normal Linux desktop
+printing stack:
+
+1. `supvan-printer-app` runs as the user-scoped systemd service.
+2. The E11 is advertised over DNS-SD/Avahi as an IPP Everywhere printer.
+3. CUPS discovers the printer and can submit jobs through the IPP service.
+4. A permanent driverless CUPS queue created with `-m everywhere` exposes the
+   E11 media definitions correctly to desktop applications.
+5. LibreOffice Writer has successfully printed formatted labels through CUPS
+   to the physical E11 over BLE.
+6. Standard IPP landscape orientation produces the expected left-to-right
+   printing along the label ribbon.
+
+On the tested Ubuntu desktop, CUPS' temporary DNS-SD queue was sufficient for
+printing, but LibreOffice Writer exposed only generic standard paper sizes
+through that queue. Creating a permanent driverless CUPS queue allowed
+LibreOffice to obtain the E11's advertised custom media definitions correctly.
+
+The queue can be created with:
+
+```sh
+sudo lpadmin \
+    -p Supvan_E11 \
+    -E \
+    -v "ipp://localhost:8631/ipp/print/<name>" \
+    -m everywhere
+```
+
+For the tested E11 configuration, CUPS then exposes the available media,
+including the physically verified `15x50mm` size:
+
+```text
+PageSize/Media Size: 10x10mm.Borderless *15x50mm 50x120mm Custom.WIDTHxHEIGHT
+```
+
+The permanent queue is therefore a desktop-client integration workaround; it
+does not change the Supvan protocol, raster implementation or physical media
+handling.
+
+A working LibreOffice Writer configuration for the verified media is:
+
+- document page: 5.00 cm x 1.50 cm;
+- printer: `Supvan_E11`;
+- media: `15x50mm`;
+- orientation: Landscape.
+
+Fonts, point sizes, bold, italic, alignment, graphics and other document
+formatting remain normal application/print-stack functions. The Supvan driver
+receives the resulting raster; it does not need to implement those formatting
+features itself.
+
+The E11 material query reports `remaining=0` on the tested loaded roll even
+though the printer reports neither `label_end` nor `label_not_installed`.
+E-series status handling therefore does not treat that zero counter alone as
+`media-empty`; the physical media-status bits remain authoritative.
+
+## Current experimental assumptions
+
+Some E11 parameters are not yet considered confirmed.
+
+In particular:
+
+- The current E-series printhead geometry is 96 dots / 12 bytes per line.
+- That value originates from E10pro work and has been shown to produce a valid
+  E11 print, but it has not yet been established as the E11's actual full
+  printable width.
+- The physical E11 uses 15 mm media, while the current experimental raster is
+  limited to approximately 12 mm.
+- The meaning of all raw E11 status bits is not yet completely decoded.
+- Behaviour shared across E10, E11, E12 and E16 must not be assumed solely from
+  one tested E11 and one captured E10pro.
+
+These items should remain explicit experimental parameters until confirmed by
+measurement or additional captures.
+
+## Development approach
+
+Changes in this fork are being made incrementally against physical hardware:
+
+- preserve upstream T-series behaviour;
+- isolate E-series differences behind profile-specific logic;
+- change one protocol assumption at a time;
+- retain raw status information in diagnostic traces;
+- compile and run the existing test suite after each change;
+- commit known-working milestones before further experiments.
+
+The objective is to produce E11 support without obscuring or regressing the
+original upstream implementation.
+
+---
+
+## Original upstream README
+
+The remainder of this file is Florian Hänel's upstream README.
+
 # Supvan label printer driver
 
 A pure-Rust **IPP Everywhere** printer application for Supvan T-series thermal

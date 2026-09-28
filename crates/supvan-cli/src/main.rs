@@ -19,6 +19,7 @@ use supvan_proto::buffer::{Density, PageOptions};
 use supvan_proto::cmd;
 use supvan_proto::dither::DitherMode;
 use supvan_proto::printer::Printer;
+use supvan_proto::profile::PrintProfile;
 use supvan_proto::rfid::{RfidMaterial, heat_presets};
 use supvan_proto::status::{DEFAULT_LABEL_GAP_MM, DEFAULT_LABEL_HEIGHT_MM, MaterialInfo};
 
@@ -72,6 +73,9 @@ enum Command {
         /// the advance to the tear-off position.
         #[arg(long)]
         save_paper: bool,
+        /// Use the E-series print protocol.
+        #[arg(long)]
+        e_series: bool,
     },
     /// Feed/advance one blank label (PAPER_SKIP)
     Feed {
@@ -321,8 +325,17 @@ async fn cmd_material(target: &str) -> CliResult {
     Ok(())
 }
 
-async fn cmd_test_print(target: &str, density: Density, save_paper: bool) -> CliResult {
-    let printer = connect(target).await?;
+async fn cmd_test_print(
+    target: &str,
+    density: Density,
+    save_paper: bool,
+    e_series: bool,
+) -> CliResult {
+    let mut printer = connect(target).await?;
+
+    if e_series {
+        printer.set_profile(PrintProfile::ESeries);
+    }
 
     // Query material to get label dimensions, falling back to printhead-width
     // defaults if no label is installed.
@@ -864,6 +877,7 @@ async fn main() -> ExitCode {
             density,
             red_density,
             save_paper,
+            e_series,
         } => {
             cmd_test_print(
                 &target,
@@ -872,6 +886,7 @@ async fn main() -> ExitCode {
                     red: red_density.unwrap_or(density),
                 },
                 save_paper,
+                e_series,
             )
             .await
         }

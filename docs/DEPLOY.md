@@ -61,6 +61,54 @@ manage. To pin a permanent queue by hand if you ever want one:
 lpadmin -p supvan -E -v "ipp://localhost:8631/ipp/print/<name>" -m everywhere
 ```
 
+
+### Permanent queue for desktop applications
+
+The normal architecture uses CUPS' temporary DNS-SD queue. On the tested
+Ubuntu desktop, that queue was sufficient for printing, but LibreOffice Writer
+exposed only generic standard paper sizes through it.
+
+Creating a permanent driverless queue from the same IPP endpoint allowed
+LibreOffice to obtain the printer's advertised custom media definitions
+correctly:
+
+```sh
+sudo lpadmin \
+    -p Supvan_E11 \
+    -E \
+    -v "ipp://localhost:8631/ipp/print/<name>" \
+    -m everywhere
+```
+
+Verify the exposed media:
+
+```sh
+lpoptions -p Supvan_E11 -l | grep -Ei 'PageSize|media'
+```
+
+On the physically tested E11 this includes:
+
+```text
+PageSize/Media Size: 10x10mm.Borderless *15x50mm 50x120mm Custom.WIDTHxHEIGHT
+MediaType/Media Type: Labels Stationery
+```
+
+The permanent queue is a desktop-client integration workaround; it does not
+change the printer protocol or physical media handling.
+
+For the verified 15 mm x 50 mm media in LibreOffice Writer:
+
+- set the document page to 5.00 cm x 1.50 cm;
+- select printer `Supvan_E11`;
+- select media `15x50mm`;
+- select Landscape orientation.
+
+Landscape orientation produces the expected left-to-right printing along the
+label ribbon. Fonts, sizes, bold, italic, alignment and graphics are handled by
+the application and normal print stack; the Supvan printer application receives
+the resulting raster.
+
+
 ## cups-browsed coexistence
 
 `cups-browsed` is the legacy daemon that turns DNS-SD adverts into local CUPS
