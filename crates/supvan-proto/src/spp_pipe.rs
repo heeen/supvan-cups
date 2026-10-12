@@ -45,19 +45,6 @@ pub trait SppPipe: Send + Sync {
     fn acks_data_frames(&self) -> bool {
         true
     }
-
-    /// Measured cost of this link, if it is slow enough to matter.
-    fn link_cost(&self) -> Option<LinkCost> {
-        None
-    }
-}
-
-/// What moving a block costs on a link: per data frame (paced writes plus its
-/// ack) and per block (NEXT_ZIPPEDBULK, BUF_FULL and a status poll).
-#[derive(Debug, Clone, Copy)]
-pub struct LinkCost {
-    pub per_frame: Duration,
-    pub per_block: Duration,
 }
 
 /// Drives an [`SppPipe`] to implement the SPP-framed [`Transport`] protocol
@@ -108,12 +95,6 @@ impl<P: SppPipe> Transport for SppCodec<P> {
             self.pipe.send_data_frame(frame, acked && i < last).await?;
         }
         Ok(None)
-    }
-
-    fn block_delivery_time(&self, compressed_len: usize) -> Option<Duration> {
-        let cost = self.pipe.link_cost()?;
-        let frames = compressed_len.div_ceil(DATA_PAYLOAD_SIZE) as u32;
-        Some(cost.per_frame * frames + cost.per_block)
     }
 
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus> {

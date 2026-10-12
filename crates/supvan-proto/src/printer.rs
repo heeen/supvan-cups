@@ -5,7 +5,7 @@
 //! transfer buffers -> poll complete.
 
 use crate::bitmap::DOTS_PER_MM;
-use crate::buffer::{ColourMode, Density, PRINT_BUF_SIZE, PageOptions, printed_cols};
+use crate::buffer::{ColourMode, Density, PRINT_BUF_SIZE, PageOptions};
 use crate::cmd::*;
 use crate::compress::{CompressedPage, compress_buffers};
 use crate::error::{Error, Result};
@@ -25,9 +25,18 @@ const COMPLETION_WAIT: Duration = Duration::from_secs(30);
 const BUFFER_POLL: Duration = Duration::from_millis(20);
 const BUFFER_WAIT: Duration = Duration::from_secs(15);
 
-/// Run the head at most this fraction of what a slow link can deliver, so link
-/// jitter doesn't starve it.
+/// Run the head at most this fraction of what the link was measured to
+/// deliver, so jitter doesn't starve it.
 const LINK_HEADROOM: f32 = 0.85;
+/// Round trips each block costs beyond its data: NEXT_ZIPPEDBULK, BUF_FULL
+/// and the status poll before the next one.
+const BLOCK_ROUND_TRIPS: u32 = 3;
+
+/// How long the first block of a page took to move, measured as it goes.
+struct LinkTiming {
+    round_trip: Duration,
+    per_byte: Duration,
+}
 
 /// Strip the `ble://` (or `ble:`) scheme from a target string.
 fn ble_target(target: &str) -> Option<&str> {
@@ -270,23 +279,32 @@ impl Printer {
         }
     }
 
-    /// Send one compressed block: NEXT_ZIPPEDBULK → data → BUF_FULL.
-    async fn transfer_compressed(&self, data: &[u8], speed: u16) -> Result<()> {
-        let flow = self.transport.flow();
+    /// NEXT_ZIPPEDBULK and the block's data, timed.
+    async fn send_block_data(&self, data: &[u8]) -> Result<LinkTiming> {
         let len = u16::try_from(data.len())
             .map_err(|_| Error::InvalidParam("compressed block too large".into()))?;
-
+        let started = Instant::now();
         if self.transport.send_bulk_header(len).await?.is_none() {
             return Err(Error::InvalidResponse(
                 "no response to NEXT_ZIPPEDBULK".into(),
             ));
         }
+        let round_trip = started.elapsed();
         self.transport.send_bulk_data(data).await?;
+        let per_byte = (started.elapsed() - round_trip) / data.len().max(1) as u32;
+        Ok(LinkTiming {
+            round_trip,
+            per_byte,
+        })
+    }
 
+    /// BUF_FULL — the block is in; print it at `speed`.
+    async fn commit_block(&self, len: usize, speed: u16) -> Result<()> {
+        let flow = self.transport.flow();
         tokio::time::sleep(flow.pre_buf_full_delay()).await;
         log::info!("BUF_FULL: len={len}, speed={speed}");
         self.transport
-            .send_cmd_two(CMD_BUF_FULL, len, speed)
+            .send_cmd_two(CMD_BUF_FULL, len as u16, speed)
             .await?
             .ok_or_else(|| Error::InvalidResponse("no response to BUF_FULL".into()))?;
         tokio::time::sleep(flow.post_buf_full_delay()).await;
@@ -296,44 +314,35 @@ impl Printer {
     /// Compress a page's print buffers the way this transport's vendor tool
     /// does, then print them.
     pub async fn print_buffers(&self, buffers: &[[u8; PRINT_BUF_SIZE]]) -> Result<()> {
-        let mut page = compress_buffers(buffers, self.transport.flow().packing())?;
-        if let Some(cap) = self.link_speed_cap(&page, buffers)
-            && cap < page.speed
-        {
-            log::info!(
-                "speed {} -> {cap}: the link can't feed it faster",
-                page.speed
-            );
-            page.speed = cap;
-        }
+        let page = compress_buffers(buffers, self.transport.flow().packing())?;
         self.print_compressed(&page).await
     }
 
-    /// The fastest vendor speed this link can feed every block of the page at.
+    /// The fastest vendor speed at which `timing` can keep every block of the
+    /// page coming before the head finishes the one before.
     ///
-    /// The vendor speed rule only looks at density, and over Classic BT a
-    /// dense halftone buffer arrives slower than the head prints it at that
-    /// speed — the head stalls mid-label and leaves stripes. The Android app
-    /// dodges it only by forcing speed 5 for photos.
-    fn link_speed_cap(
-        &self,
-        page: &CompressedPage,
-        buffers: &[[u8; PRINT_BUF_SIZE]],
-    ) -> Option<u16> {
-        let mut rest = buffers;
-        let mut cap = None;
-        for block in &page.blocks {
-            let (mine, tail) = rest.split_at(block.source_buffers);
-            rest = tail;
-            let secs = self
-                .transport
-                .block_delivery_time(block.data.len())?
-                .as_secs_f32();
-            let mm = mine.iter().map(printed_cols).sum::<u32>() as f32 / DOTS_PER_MM as f32;
-            let speed = crate::speed::fastest_at_most(mm / secs * LINK_HEADROOM);
-            cap = Some(cap.map_or(speed, |c: u16| c.min(speed)));
-        }
-        cap
+    /// The vendor speed rule only looks at density. Over Bluetooth a dense
+    /// halftone buffer can arrive slower than the head prints it at that
+    /// speed — how much slower varies twofold with the radio link from one
+    /// job to the next — and the head stalls mid-label, leaving stripes. The
+    /// Android app only dodges it by forcing speed 5 for photos. Measuring the
+    /// page's own first block sidesteps guessing: the speed rides on BUF_FULL,
+    /// which follows the data.
+    fn link_speed_cap(&self, page: &CompressedPage, timing: &LinkTiming) -> u16 {
+        let flow = self.transport.flow();
+        let overhead = flow.pre_buf_full_delay()
+            + flow.post_buf_full_delay()
+            + timing.round_trip * BLOCK_ROUND_TRIPS;
+        // Each block has to arrive while the head prints the one before it.
+        page.blocks
+            .windows(2)
+            .map(|pair| {
+                let printing = pair[0].printed_cols as f32 / DOTS_PER_MM as f32;
+                let arriving = timing.per_byte * pair[1].data.len() as u32 + overhead;
+                crate::speed::fastest_at_most(printing / arriving.as_secs_f32() * LINK_HEADROOM)
+            })
+            .min()
+            .unwrap_or(page.speed)
     }
 
     /// Run one print job — the shared skeleton of Android
@@ -355,6 +364,7 @@ impl Printer {
         })
         .await?;
 
+        let mut speed = page.speed;
         for (i, block) in page.blocks.iter().enumerate() {
             let before = match self
                 .poll_status(
@@ -371,15 +381,28 @@ impl Printer {
                     return Err(e);
                 }
             };
+            let timing = self.send_block_data(&block.data).await?;
+            // A single-block page is all in before the head starts; only a
+            // split page can be starved.
+            if i == 0 && page.blocks.len() > 1 {
+                let cap = self.link_speed_cap(page, &timing);
+                if cap < speed {
+                    log::info!(
+                        "speed {speed} -> {cap}: link measured at {:?}/KB + {:?} per round trip",
+                        timing.per_byte * 1024,
+                        timing.round_trip
+                    );
+                    speed = cap;
+                }
+            }
             log::info!(
-                "block {}/{}: {} bytes ({} bufs), speed={}, before: {before}",
+                "block {}/{}: {} bytes ({} bufs), speed={speed}, before: {before}",
                 i + 1,
                 page.blocks.len(),
                 block.data.len(),
                 block.source_buffers,
-                page.speed,
             );
-            self.transfer_compressed(&block.data, page.speed).await?;
+            self.commit_block(block.data.len(), speed).await?;
         }
 
         // Both vendors call the job done once the printing flag drops.

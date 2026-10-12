@@ -83,13 +83,6 @@ pub trait Transport: Send + Sync {
     /// it to be drained, see `SppCodec`).
     async fn send_bulk_data(&self, data: &[u8]) -> Result<Option<Vec<u8>>>;
 
-    /// How long moving a `compressed_len`-byte block takes on this link —
-    /// commands included — when that is slow enough to starve the printhead.
-    /// `None` for links that outrun it, or haven't been measured.
-    fn block_delivery_time(&self, _compressed_len: usize) -> Option<Duration> {
-        None
-    }
-
     /// Parse a status response into PrinterStatus.
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus>;
 

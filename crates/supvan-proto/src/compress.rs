@@ -1,4 +1,4 @@
-use crate::buffer::PRINT_BUF_SIZE;
+use crate::buffer::{PRINT_BUF_SIZE, printed_cols};
 use crate::error::{Error, Result};
 use crate::speed::{MAX_SPEED, SPLIT_PAGE_SPEED, calc_speed};
 use liblzma_sys as sys;
@@ -50,6 +50,18 @@ pub struct CompressedBlock {
     pub data: Vec<u8>,
     /// How many 4096-byte print buffers were concatenated before compression.
     pub source_buffers: usize,
+    /// Feed columns those buffers print — the length of label this block covers.
+    pub printed_cols: u32,
+}
+
+impl CompressedBlock {
+    fn new(data: Vec<u8>, buffers: &[[u8; PRINT_BUF_SIZE]]) -> Self {
+        Self {
+            data,
+            source_buffers: buffers.len(),
+            printed_cols: buffers.iter().map(printed_cols).sum(),
+        }
+    }
 }
 
 /// A page's blocks plus the one speed they all go out at (BUF_FULL's second
@@ -208,11 +220,9 @@ fn compress_grouped(buffers: &[[u8; PRINT_BUF_SIZE]]) -> Result<CompressedPage> 
             take -= 1;
         };
         speed = speed.min(calc_speed(data.len() / take));
-        blocks.push(CompressedBlock {
-            data,
-            source_buffers: take,
-        });
-        rest = &rest[take..];
+        let (group, tail) = rest.split_at(take);
+        blocks.push(CompressedBlock::new(data, group));
+        rest = tail;
     }
     Ok(CompressedPage { blocks, speed })
 }
@@ -227,10 +237,7 @@ fn compress_per_buffer(buffers: &[[u8; PRINT_BUF_SIZE]]) -> Result<CompressedPag
         let whole = compress_lzma(&buffers.concat())?;
         if whole.len() <= MAX_COMPRESSED_BLOCK {
             return Ok(CompressedPage {
-                blocks: vec![CompressedBlock {
-                    data: whole,
-                    source_buffers: buffers.len(),
-                }],
+                blocks: vec![CompressedBlock::new(whole, buffers)],
                 speed: MAX_SPEED,
             });
         }
@@ -242,14 +249,12 @@ fn compress_per_buffer(buffers: &[[u8; PRINT_BUF_SIZE]]) -> Result<CompressedPag
     };
     let blocks = singles
         .into_iter()
-        .map(|data| {
+        .zip(buffers.chunks(1))
+        .map(|(data, buffer)| {
             if data.len() > MAX_COMPRESSED_BLOCK {
                 return Err(oversized(data.len()));
             }
-            Ok(CompressedBlock {
-                data,
-                source_buffers: 1,
-            })
+            Ok(CompressedBlock::new(data, buffer))
         })
         .collect::<Result<_>>()?;
     Ok(CompressedPage { blocks, speed })
