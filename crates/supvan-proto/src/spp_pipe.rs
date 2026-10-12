@@ -26,7 +26,7 @@ pub(crate) const SPP_CHUNK_DELAY: Duration = Duration::from_millis(10);
 
 /// Raw transport for pre-framed SPP frames.
 #[async_trait]
-pub trait SppPipe: Send + Sync {
+pub(crate) trait SppPipe: Send + Sync {
     /// Send a 16-byte command frame; return the device's raw response.
     async fn send_cmd_frame(&self, frame: &CmdFrame) -> Result<Option<Vec<u8>>>;
 
@@ -49,12 +49,12 @@ pub trait SppPipe: Send + Sync {
 
 /// Drives an [`SppPipe`] to implement the SPP-framed [`Transport`] protocol
 /// (`0x7E5A` command framing, 512-byte data frames, BT response parsing).
-pub struct SppCodec<P: SppPipe> {
+pub(crate) struct SppCodec<P: SppPipe> {
     pipe: P,
 }
 
 impl<P: SppPipe> SppCodec<P> {
-    pub fn new(pipe: P) -> Self {
+    pub(crate) fn new(pipe: P) -> Self {
         Self { pipe }
     }
 }

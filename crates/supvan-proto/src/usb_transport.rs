@@ -21,12 +21,12 @@ const USB_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const USB_DEVICE_SN_OFFSET: usize = 40;
 
 /// USB HID transport over a hidraw device.
-pub struct UsbHidTransport {
+pub(crate) struct UsbHidTransport {
     dev: HidrawDevice,
 }
 
 impl UsbHidTransport {
-    pub fn new(dev: HidrawDevice) -> Self {
+    pub(crate) fn new(dev: HidrawDevice) -> Self {
         Self { dev }
     }
 

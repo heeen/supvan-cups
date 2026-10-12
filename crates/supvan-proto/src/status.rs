@@ -123,7 +123,7 @@ impl PrinterStatus {
     }
 
     /// `Err` naming the error flags, if any are set; `context` says when.
-    pub fn ensure_ok(&self, context: &str) -> Result<()> {
+    pub(crate) fn ensure_ok(&self, context: &str) -> Result<()> {
         match self.error_description() {
             Some(errors) => Err(Error::InvalidResponse(format!(
                 "printer error {context}: {errors}"

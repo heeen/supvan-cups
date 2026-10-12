@@ -64,7 +64,7 @@ fn response_matches(resp: &[u8], cmd: u8) -> bool {
 }
 
 #[cfg(feature = "ble")]
-pub use imp::BlePipe;
+pub(crate) use imp::BlePipe;
 
 #[cfg(feature = "ble")]
 mod imp {
@@ -96,7 +96,7 @@ mod imp {
 
     /// A GATT byte pipe: writes SPP frames to the write characteristic and
     /// reads responses from the notify characteristic.
-    pub struct BlePipe {
+    pub(crate) struct BlePipe {
         write_char: Characteristic,
         notify: Mutex<NotifyStream>,
         // Keep the connection + session alive for the pipe's lifetime.
@@ -107,7 +107,7 @@ mod imp {
     impl BlePipe {
         /// Connect to a BLE printer by address, discover its Supvan GATT
         /// service, and subscribe to notifications.
-        pub async fn connect(address: &str) -> Result<Self> {
+        pub(crate) async fn connect(address: &str) -> Result<Self> {
             let session = Session::new().await?;
             let adapter = session.default_adapter().await?;
             adapter.set_powered(true).await?;

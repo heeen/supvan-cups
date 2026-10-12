@@ -15,9 +15,11 @@
 //! T50 Pro units whose Bluetooth name contains `A` or `B`. The firmware support
 //! is real; whether a given unit honours it is an empirical question.
 
+use crate::bitmap::Canvas;
+
 /// Luminance at or above which a pixel is blank — the vendor's `threshold`,
 /// default 125.
-pub const BLANK_THRESHOLD: u8 = 125;
+pub(crate) const BLANK_THRESHOLD: u8 = 125;
 
 /// Luminance at or below which an inked pixel burns black rather than red.
 ///
@@ -25,14 +27,14 @@ pub const BLANK_THRESHOLD: u8 = 125;
 /// It is a luminance cut, not a hue test: any mid-grey in the 48..125 window
 /// becomes red, so callers should quantise to two ink colours before encoding
 /// rather than relying on this to separate an arbitrary image.
-pub const BLACK_THRESHOLD: u8 = 48;
+pub(crate) const BLACK_THRESHOLD: u8 = 48;
 
 /// Which bitplane an inked pixel belongs to.
 ///
 /// Plane order on the wire is red first, then black, matching the vendor's
 /// `luma > 48` branch writing to the even (plane 0) slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Plane {
+pub(crate) enum Plane {
     Red = 0,
     Black = 1,
 }
@@ -42,13 +44,13 @@ pub enum Plane {
 /// Deliberately not Rec. 601/709 — these are the coefficients the firmware's
 /// threshold pair was chosen against, so changing them would move where pure
 /// red falls relative to [`BLACK_THRESHOLD`].
-pub fn luma(r: u8, g: u8, b: u8) -> u8 {
+pub(crate) fn luma(r: u8, g: u8, b: u8) -> u8 {
     let y = (r as f32) * 0.3 + (g as f32) * 0.59 + (b as f32) * 0.11;
     y as u8
 }
 
 /// Classify a pixel by luminance. `None` means no ink.
-pub fn classify(luma: u8) -> Option<Plane> {
+pub(crate) fn classify(luma: u8) -> Option<Plane> {
     if luma >= BLANK_THRESHOLD {
         None
     } else if luma > BLACK_THRESHOLD {
@@ -58,76 +60,47 @@ pub fn classify(luma: u8) -> Option<Plane> {
     }
 }
 
-/// Interleave two equal-length column-major planes into the wire layout.
-///
-/// Both inputs are `cols * per_line_byte` bytes in the same column-major
-/// LSB-first packing the mono path uses. The output places each column's red
-/// line immediately before its black line, so the printer sees `cols * 2`
-/// lines of `per_line_byte` each — which is exactly why the buffer header
-/// advertises a doubled column count.
-///
-/// Returns `None` if the planes disagree in length or aren't a whole number of
-/// columns.
-pub fn interleave_planes(
-    red: &[u8],
-    black: &[u8],
-    per_line_byte: usize,
-    cols: usize,
-) -> Option<Vec<u8>> {
-    let expected = cols.checked_mul(per_line_byte)?;
-    if red.len() != expected || black.len() != expected {
-        return None;
-    }
-
-    let mut out = Vec::with_capacity(expected * 2);
-    for col in 0..cols {
-        let range = col * per_line_byte..(col + 1) * per_line_byte;
-        out.extend_from_slice(&red[range.clone()]);
-        out.extend_from_slice(&black[range]);
-    }
-    Some(out)
-}
-
-/// Split an RGB image into the two column-major bitplanes the printer expects.
-///
-/// `rgb` is row-major `width * height * 3`. Output planes are column-major
-/// LSB-first with `height` columns of `ceil(width / 8)` bytes, matching the
-/// rotation [`bitmap::raster_to_column_major`](crate::bitmap::raster_to_column_major)
-/// applies — a printed "column" is one printhead line.
-///
-/// Returns `(red, black, cols, per_line_byte)`.
-pub fn rgb_to_planes(rgb: &[u8], width: u32, height: u32) -> (Vec<u8>, Vec<u8>, u32, u32) {
-    let per_line_byte = width.div_ceil(8);
-    let plane_len = (height * per_line_byte) as usize;
-    let mut red = vec![0u8; plane_len];
-    let mut black = vec![0u8; plane_len];
-
-    for y in 0..height {
-        for x in 0..width {
-            let px = ((y * width + x) * 3) as usize;
-            let Some([r, g, b]) = rgb.get(px..px + 3).map(|s| [s[0], s[1], s[2]]) else {
-                continue;
-            };
+/// Encode an RGB image (row-major, 3 bytes per pixel) in the two-colour wire
+/// layout: one printed column per image row, each column's red line followed
+/// by its black line, both column-major LSB-first like the mono path. The
+/// printer sees `2 * cols` lines, which is why the buffer header advertises a
+/// doubled column count; `cols` here counts printed columns.
+pub(crate) fn rgb_to_interleaved(rgb: &[u8], width: u32, height: u32) -> Canvas {
+    let bpl = width.div_ceil(8) as usize;
+    let mut data = vec![0u8; 2 * bpl * height as usize];
+    for (y, row) in rgb
+        .chunks_exact(width as usize * 3)
+        .take(height as usize)
+        .enumerate()
+    {
+        for (x, &[r, g, b]) in row.as_chunks::<3>().0.iter().enumerate() {
             let Some(plane) = classify(luma(r, g, b)) else {
                 continue;
             };
-
-            // -90° rotation: output column = y, dot position within it = x.
-            let idx = (y * per_line_byte + x / 8) as usize;
-            let bit = 1 << (x % 8); // LSB-first
-            match plane {
-                Plane::Red => red[idx] |= bit,
-                Plane::Black => black[idx] |= bit,
-            }
+            let line = 2 * y + plane as usize;
+            data[line * bpl + x / 8] |= 1 << (x % 8);
         }
     }
-
-    (red, black, height, per_line_byte)
+    Canvas {
+        data,
+        cols: height as u16,
+        bpl: bpl as u8,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The red and black lines of printed column `col`.
+    fn planes(c: &Canvas, col: usize) -> (&[u8], &[u8]) {
+        let bpl = usize::from(c.bpl);
+        let start = 2 * col * bpl;
+        (
+            &c.data[start..start + bpl],
+            &c.data[start + bpl..start + 2 * bpl],
+        )
+    }
 
     /// The whole reason BLACK_THRESHOLD is 48: pure red must not be classified
     /// as black. If the luma coefficients ever drift, this is what catches it.
@@ -158,26 +131,23 @@ mod tests {
         assert_eq!(classify(BLACK_THRESHOLD), Some(Plane::Black));
     }
 
-    #[test]
-    fn interleave_puts_red_before_black_per_column() {
-        let red = vec![0xAA, 0xBB, 0xCC, 0xDD];
-        let black = vec![0x11, 0x22, 0x33, 0x44];
-        let out = interleave_planes(&red, &black, 2, 2).unwrap();
-        assert_eq!(out, vec![0xAA, 0xBB, 0x11, 0x22, 0xCC, 0xDD, 0x33, 0x44]);
-    }
-
     /// End-to-end on the real test card: the thick bar must be red and the thin
     /// bar black, in different planes. This is the encoder half of the hardware
     /// check — if it passes and the label still comes out wrong, the fault is
     /// the firmware's plane order, not ours.
     #[test]
     fn test_card_puts_thick_bar_in_red_plane() {
-        let (rgb, w, h) = crate::bitmap::create_two_colour_card(34, 34);
-        let (red, black, cols, bpl) = rgb_to_planes(&rgb, w, h);
-        assert_eq!((cols, bpl), (h, w / 8));
+        let (rgb, w, h) =
+            crate::bitmap::create_two_colour_pattern(34, 34, crate::bitmap::CardPattern::Bars);
+        let c = rgb_to_interleaved(&rgb, w, h);
+        assert_eq!((u32::from(c.cols), u32::from(c.bpl)), (h, w / 8));
 
-        let ink = |plane: &[u8]| -> usize { plane.iter().map(|b| b.count_ones() as usize).sum() };
-        let (red_dots, black_dots) = (ink(&red), ink(&black));
+        let ink = |line: &[u8]| line.iter().map(|b| b.count_ones() as usize).sum::<usize>();
+        let (red_dots, black_dots) = (0..usize::from(c.cols))
+            .map(|col| planes(&c, col))
+            .fold((0, 0), |(r, b), (red, black)| {
+                (r + ink(red), b + ink(black))
+            });
         assert!(red_dots > 0 && black_dots > 0);
         // The red bar is 3/10 of the height, the black bar 3/20 — twice as thick.
         assert!(
@@ -186,24 +156,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn interleave_rejects_mismatched_planes() {
-        assert!(interleave_planes(&[0; 4], &[0; 2], 2, 2).is_none());
-        assert!(interleave_planes(&[0; 4], &[0; 4], 2, 3).is_none());
-    }
-
     /// Red and black pixels must land in different planes at the same bit
-    /// position — that co-location is what makes them one dot in two colours.
+    /// position — that co-location is what makes them one dot in two colours —
+    /// with the red line first on the wire.
     #[test]
-    fn rgb_splits_colours_into_separate_planes() {
+    fn rgb_splits_colours_into_red_then_black_lines() {
         // 8x1: red at x=0, black at x=1, white elsewhere.
         let mut rgb = vec![255u8; 8 * 3];
         rgb[0..3].copy_from_slice(&[255, 0, 0]);
         rgb[3..6].copy_from_slice(&[0, 0, 0]);
 
-        let (red, black, cols, bpl) = rgb_to_planes(&rgb, 8, 1);
-        assert_eq!((cols, bpl), (1, 1));
-        assert_eq!(red[0], 0b0000_0001);
-        assert_eq!(black[0], 0b0000_0010);
+        let c = rgb_to_interleaved(&rgb, 8, 1);
+        assert_eq!((c.cols, c.bpl), (1, 1));
+        assert_eq!(c.data, [0b0000_0001, 0b0000_0010]);
     }
 }

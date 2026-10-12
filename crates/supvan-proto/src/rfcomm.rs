@@ -31,13 +31,13 @@ struct SockaddrRc {
 }
 
 /// A Bluetooth RFCOMM socket connection to a printer.
-pub struct RfcommSocket {
+pub(crate) struct RfcommSocket {
     fd: OwnedFd,
 }
 
 impl RfcommSocket {
     /// Connect to a Bluetooth device by address string (e.g. "A4:93:40:A0:87:57").
-    pub fn connect(addr: &str) -> Result<Self> {
+    pub(crate) fn connect(addr: &str) -> Result<Self> {
         let bdaddr = parse_bdaddr(addr)?;
 
         let raw = unsafe { libc::socket(AF_BLUETOOTH, libc::SOCK_STREAM, BTPROTO_RFCOMM) };

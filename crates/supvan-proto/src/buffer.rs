@@ -16,62 +16,50 @@ const HDR_RED: usize = 12;
 /// Margin clamp range (dots) for the print-buffer header.
 const MARGIN_MAX_DOTS: u16 = 900;
 
-/// Maximum density / red-deepness value encoded in the buffer header.
-const MAX_DENSITY: u8 = 15;
+/// Maximum density (black `nodu` / red deepness) the buffer header encodes.
+pub const MAX_DENSITY: u8 = 15;
 
 /// The firmware re-reads the running checksum at every Nth byte; the builder
 /// folds in the byte just before each boundary.
 const CHECKSUM_STRIDE: usize = 256;
 
-/// Parameters for PAGE_REG_BITS construction.
+/// PAGE_REG_BITS byte 0 flags.
+const PAGE_ST: u8 = 0x02;
+const PAGE_END: u8 = 0x04;
+const PRT_END: u8 = 0x08;
+const SAVE_PAPER: u8 = 0x80;
+/// Material type in PAGE_REG_BITS byte 1, bits 6-7. Both vendor tools always
+/// send 1 (`page_reg_bits.Mat = 1`).
+const MAT_LABEL: u8 = 1;
+
+/// PAGE_REG_BITS, the two page-control bytes of a print buffer header.
+///
+/// Byte 0: bit 1 PageSt (first buffer of page), bit 2 PageEnd (last buffer of
+/// page), bit 3 PrtEnd (end of job), bits 4-6 Cut (never set by either vendor
+/// tool), bit 7 Savepaper.
+///
+/// Byte 1: bits 0-1 FirstCut (colour mode), bits 2-5 Nodu (black density),
+/// bits 6-7 Mat.
 #[derive(Debug, Clone, Default)]
-pub struct PageRegBits {
-    pub page_st: bool,
-    pub page_end: bool,
-    pub prt_end: bool,
-    pub cut: u8,
-    pub savepaper: bool,
-    pub first_cut: u8,
-    pub nodu: u8,
-    pub mat: u8,
+struct PageRegBits {
+    page_st: bool,
+    page_end: bool,
+    prt_end: bool,
+    savepaper: bool,
+    first_cut: u8,
+    nodu: u8,
 }
 
-/// Build PAGE_REG_BITS (2 bytes) for a print buffer header.
-///
-/// Byte 0:
-///   bit 1: PageSt (first buffer of page)
-///   bit 2: PageEnd (last buffer of page)
-///   bit 3: PrtEnd (end of print job)
-///   bits 4-6: Cut mode (3 bits)
-///   bit 7: Savepaper
-///
-/// Byte 1:
-///   bits 0-1: FirstCut
-///   bits 2-5: Nodu (density, 0-15)
-///   bits 6-7: Mat (material type)
-pub fn build_page_reg_bits(p: &PageRegBits) -> [u8; 2] {
-    let mut b0: u8 = 0;
-    if p.page_st {
-        b0 |= 0x02;
+impl PageRegBits {
+    fn to_bytes(&self) -> [u8; 2] {
+        let flag = |on: bool, bit: u8| if on { bit } else { 0 };
+        let b0 = flag(self.page_st, PAGE_ST)
+            | flag(self.page_end, PAGE_END)
+            | flag(self.prt_end, PRT_END)
+            | flag(self.savepaper, SAVE_PAPER);
+        let b1 = (self.first_cut & 0x03) | (self.nodu & 0x0F) << 2 | MAT_LABEL << 6;
+        [b0, b1]
     }
-    if p.page_end {
-        b0 |= 0x04;
-    }
-    if p.prt_end {
-        b0 |= 0x08;
-    }
-    b0 &= 0x0F;
-    b0 |= (p.cut & 0x07) << 4;
-    if p.savepaper {
-        b0 |= 0x80;
-    }
-
-    let mut b1: u8 = 0;
-    b1 |= p.first_cut & 0x03;
-    b1 |= (p.nodu & 0x0F) << 2;
-    b1 |= (p.mat & 0x03) << 6;
-
-    [b0, b1]
 }
 
 /// The two independent burn-energy trims a print buffer carries.
@@ -141,7 +129,7 @@ impl ColourMode {
     }
 
     /// Bitplanes per printed column.
-    pub fn planes(self) -> u16 {
+    pub(crate) fn planes(self) -> u16 {
         match self {
             Self::Mono => 1,
             Self::TwoColour => 2,
@@ -166,18 +154,18 @@ pub struct PageOptions {
 }
 
 /// Parameters for building a print buffer.
-pub struct PrintBufferParams<'a> {
-    pub image_data: &'a [u8],
-    pub per_line_byte: u8,
+struct PrintBufferParams<'a> {
+    image_data: &'a [u8],
+    per_line_byte: u8,
     /// Lines in this buffer — already doubled when `colour` is two-colour.
-    pub cols_in_buf: u16,
-    pub page_st: bool,
-    pub page_end: bool,
-    pub prt_end: bool,
-    pub margin_top: u16,
-    pub margin_bottom: u16,
-    pub density: Density,
-    pub page: PageOptions,
+    cols_in_buf: u16,
+    page_st: bool,
+    page_end: bool,
+    prt_end: bool,
+    margin_top: u16,
+    margin_bottom: u16,
+    density: Density,
+    page: PageOptions,
 }
 
 /// Build a 4096-byte print buffer.
@@ -193,51 +181,42 @@ pub struct PrintBufferParams<'a> {
 ///   [12]     Red deepness (0-15)
 ///   [13]     0
 ///   [14..]   Image data
-pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
+fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
     let mut buf = [0u8; PRINT_BUF_SIZE];
 
-    // PAGE_REG_BITS
-    let page_bits = build_page_reg_bits(&PageRegBits {
+    let page_bits = PageRegBits {
         page_st: p.page_st,
         page_end: p.page_end,
         prt_end: p.prt_end,
-        nodu: p.density.black,
-        mat: 1,
-        first_cut: p.page.colour.first_cut(),
         savepaper: p.page.save_paper,
-        ..Default::default()
-    });
-    buf[HDR_PAGE_REG..HDR_PAGE_REG + 2].copy_from_slice(&page_bits);
+        first_cut: p.page.colour.first_cut(),
+        nodu: p.density.black.min(MAX_DENSITY),
+    };
+    buf[HDR_PAGE_REG..HDR_PAGE_REG + 2].copy_from_slice(&page_bits.to_bytes());
     buf[HDR_COLS..HDR_COLS + 2].copy_from_slice(&p.cols_in_buf.to_le_bytes());
     buf[HDR_BPL] = p.per_line_byte;
-
-    // Margins (clamped 1..=MARGIN_MAX_DOTS)
     let mt = p.margin_top.clamp(1, MARGIN_MAX_DOTS);
     let mb = p.margin_bottom.clamp(1, MARGIN_MAX_DOTS);
     buf[8..10].copy_from_slice(&mt.to_le_bytes());
     buf[10..12].copy_from_slice(&mb.to_le_bytes());
-
-    // Red deepness — the black trim rides in PAGE_REG_BITS above, not here.
+    // The black trim rides in PAGE_REG_BITS above, the red one here.
     buf[HDR_RED] = p.density.red.min(MAX_DENSITY);
 
-    // Image data at offset 14
     let data_len = p.image_data.len().min(PRINT_BUF_SIZE - PRINT_BUF_HEADER);
     buf[PRINT_BUF_HEADER..PRINT_BUF_HEADER + data_len].copy_from_slice(&p.image_data[..data_len]);
 
-    // Checksum: sum(buf[2..14]) + sum of bytes at each 256-byte boundary
-    let data_end = (p.cols_in_buf as usize) * (p.per_line_byte as usize) + PRINT_BUF_HEADER;
-    let mut chk: u32 = buf[HDR_PAGE_REG..PRINT_BUF_HEADER]
+    // Checksum: the header after the checksum itself, plus the last byte of
+    // every 256-byte stride up to the end of the image data.
+    let data_end = usize::from(p.cols_in_buf) * usize::from(p.per_line_byte) + PRINT_BUF_HEADER;
+    let header: u32 = buf[HDR_PAGE_REG..PRINT_BUF_HEADER]
         .iter()
         .map(|&b| u32::from(b))
         .sum();
-    let n_strides = data_end / CHECKSUM_STRIDE;
-    for i in 1..=n_strides {
-        let idx = i * CHECKSUM_STRIDE - 1;
-        if idx < buf.len() {
-            chk += buf[idx] as u32;
-        }
-    }
-    buf[0..2].copy_from_slice(&(chk as u16).to_le_bytes());
+    let strides: u32 = (CHECKSUM_STRIDE - 1..data_end.min(PRINT_BUF_SIZE))
+        .step_by(CHECKSUM_STRIDE)
+        .map(|i| u32::from(buf[i]))
+        .sum();
+    buf[0..2].copy_from_slice(&((header + strides) as u16).to_le_bytes());
 
     buf
 }
@@ -261,9 +240,9 @@ pub(crate) fn printed_cols(buf: &[u8; PRINT_BUF_SIZE]) -> u32 {
 /// printhead line it cannot — except by colour: see [`ColourMode::TwoColour`],
 /// which splits each line into two independently-trimmed planes.
 #[derive(Debug, Clone, Copy)]
-pub struct DensityBand {
-    pub cols: u16,
-    pub density: Density,
+pub(crate) struct DensityBand {
+    pub(crate) cols: u16,
+    pub(crate) density: Density,
 }
 
 /// Split column-major image data into print buffers, one density throughout.
@@ -278,7 +257,7 @@ pub fn split_into_buffers(
     density: Density,
     page: PageOptions,
 ) -> Vec<[u8; PRINT_BUF_SIZE]> {
-    let cols = total_cols - margin_top - margin_bottom;
+    let cols = total_cols.saturating_sub(margin_top + margin_bottom);
     split_into_banded_buffers(
         image_data,
         per_line_byte,
@@ -296,7 +275,7 @@ pub fn split_into_buffers(
 /// `cols` throughout is counted in *printed* columns (printhead lines). Under
 /// [`ColourMode::TwoColour`] each of those costs two `per_line_byte` planes, so
 /// buffer capacity halves and the header advertises twice the count.
-pub fn split_into_banded_buffers(
+pub(crate) fn split_into_banded_buffers(
     image_data: &[u8],
     per_line_byte: u8,
     bands: &[DensityBand],
@@ -371,11 +350,11 @@ mod tests {
 
     #[test]
     fn test_build_page_reg_bits_defaults() {
-        let bits = build_page_reg_bits(&PageRegBits {
+        let bits = PageRegBits {
             nodu: 4,
-            mat: 1,
             ..Default::default()
-        });
+        }
+        .to_bytes();
         // b0: no flags, cut=0, savepaper=0 -> 0x00
         assert_eq!(bits[0], 0x00);
         // b1: first_cut=0, nodu=4 (<<2 = 0x10), mat=1 (<<6 = 0x40) -> 0x50
@@ -384,14 +363,14 @@ mod tests {
 
     #[test]
     fn test_build_page_reg_bits_first_last() {
-        let bits = build_page_reg_bits(&PageRegBits {
+        let bits = PageRegBits {
             page_st: true,
             page_end: true,
             prt_end: true,
             nodu: 4,
-            mat: 1,
             ..Default::default()
-        });
+        }
+        .to_bytes();
         // b0: PageSt=0x02, PageEnd=0x04, PrtEnd=0x08 = 0x0E
         assert_eq!(bits[0], 0x0E);
         assert_eq!(bits[1], 0x50);

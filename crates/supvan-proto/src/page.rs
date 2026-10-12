@@ -4,7 +4,7 @@
 //! Pure — no I/O — so the IPP job, the CLI and tests compose pages the same way.
 
 use crate::bitmap::{
-    DEFAULT_MARGIN_DOTS, PRINTHEAD_WIDTH_DOTS, PRINTHEAD_WIDTH_MM, center_in_printhead,
+    Canvas, DEFAULT_MARGIN_DOTS, PRINTHEAD_WIDTH_DOTS, PRINTHEAD_WIDTH_MM, center_in_printhead,
     create_swatch_ladder, create_test_pattern, raster_to_column_major,
 };
 use crate::buffer::{
@@ -14,28 +14,18 @@ use crate::buffer::{
 use crate::dither::{DitherMode, Ditherer};
 use crate::error::{Error, Result};
 use crate::status::{DEFAULT_LABEL_HEIGHT_MM, MaterialInfo};
-use crate::twocolor::{interleave_planes, rgb_to_planes};
+use crate::twocolor::rgb_to_interleaved;
 
 pub type PrintBuffer = [u8; PRINT_BUF_SIZE];
-
-/// A column-major 1bpp image laid across the printhead: `cols` feed columns
-/// of `bpl` bytes, one bit per head dot.
-pub struct Canvas {
-    pub data: Vec<u8>,
-    pub cols: u16,
-    pub bpl: u8,
-}
 
 /// Lay a row-major, MSB-first 1bpp raster across a `head_dots`-wide head,
 /// centred, one image row per feed column.
 pub fn printhead_canvas(mono: &[u8], width: u32, height: u32, head_dots: u32) -> Canvas {
-    let (col_data, cols, _) = raster_to_column_major(mono, width, height);
-    let (data, bpl) = center_in_printhead(&col_data, cols, width, head_dots);
-    Canvas {
-        data,
-        cols: cols as u16,
-        bpl: bpl as u8,
-    }
+    center_in_printhead(
+        &raster_to_column_major(mono, width, height),
+        width,
+        head_dots,
+    )
 }
 
 /// Buffers for a canvas that already *is* the label — no margin columns are
@@ -102,11 +92,11 @@ pub fn test_pattern(mat: &MaterialInfo, density: Density, page: PageOptions) -> 
         density.red,
         page.save_paper
     );
-    let (image, _, cols, bpl) = create_test_pattern(width_mm, height_mm);
+    let pattern = create_test_pattern(width_mm, height_mm);
     split_into_buffers(
-        &image,
-        bpl as u8,
-        cols as u16,
+        &pattern.data,
+        pattern.bpl,
+        pattern.cols,
         DEFAULT_MARGIN_DOTS,
         DEFAULT_MARGIN_DOTS,
         density,
@@ -127,7 +117,7 @@ pub fn swatch_ladder(
         return Err(Error::InvalidParam("no densities to sweep".into()));
     }
     let steps = densities.len() as u32;
-    let (image, _, bpl, band_cols) = create_swatch_ladder(label_width_mm, height_mm, steps);
+    let (image, band_cols) = create_swatch_ladder(label_width_mm, height_mm, steps);
     if band_cols == 0 {
         return Err(Error::InvalidParam(format!(
             "{height_mm}mm label too short for {steps} bands"
@@ -145,8 +135,8 @@ pub fn swatch_ladder(
          densities={densities:?}"
     );
     Ok(split_into_banded_buffers(
-        &image,
-        bpl as u8,
+        &image.data,
+        image.bpl,
         &bands,
         DEFAULT_MARGIN_DOTS,
         DEFAULT_MARGIN_DOTS,
@@ -176,11 +166,8 @@ pub fn two_colour(
             rgb.len()
         )));
     }
-    let (red, black, cols, bpl) = rgb_to_planes(rgb, width, height);
-    let interleaved = interleave_planes(&red, &black, bpl as usize, cols as usize)
-        .ok_or_else(|| Error::InvalidParam("plane interleave failed".into()))?;
-
-    let printable = (cols as u16).saturating_sub(2 * DEFAULT_MARGIN_DOTS);
+    let interleaved = rgb_to_interleaved(rgb, width, height);
+    let printable = interleaved.cols.saturating_sub(2 * DEFAULT_MARGIN_DOTS);
     if printable == 0 {
         return Err(Error::InvalidParam(format!(
             "{height} rows leaves nothing after margins"
@@ -191,8 +178,8 @@ pub fn two_colour(
         density,
     }];
     let buffers = split_into_banded_buffers(
-        &interleaved,
-        bpl as u8,
+        &interleaved.data,
+        interleaved.bpl,
         &bands,
         DEFAULT_MARGIN_DOTS,
         DEFAULT_MARGIN_DOTS,

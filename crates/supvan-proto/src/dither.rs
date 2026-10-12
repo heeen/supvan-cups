@@ -111,6 +111,8 @@ const VENDOR: Kernel = &[
 const VENDOR_LEVELS: u32 = 16;
 /// `ImgConverter`'s ink threshold — what turns their 16-level grey into 1bpp.
 const VENDOR_INK_THRESHOLD: f32 = 125.0;
+/// The grey distance between two adjacent vendor levels.
+const VENDOR_STEP: f32 = 255.0 / (VENDOR_LEVELS - 1) as f32;
 
 /// Rows of carried error the widest kernel needs (Atkinson reaches `y + 2`).
 const ERROR_ROWS: usize = 3;
@@ -139,10 +141,6 @@ impl Ditherer {
         }
     }
 
-    pub fn mode(&self) -> DitherMode {
-        self.mode
-    }
-
     /// Dither one line to 1bpp MSB-first, mirrored horizontally.
     ///
     /// `line` is W colorspace (0x00 black, 0xFF white). `mono` must be at least
@@ -152,22 +150,25 @@ impl Ditherer {
     /// in natural left-to-right order, so the kernel isn't reflected with it.
     pub fn line(&mut self, line: &[u8], y: u32, mono: &mut [u8]) {
         let width = self.width.min(line.len());
-        if self.mode == DitherMode::Bayer {
-            let bayer_row = &BAYER4[(y & 3) as usize];
-            for x in 0..width {
-                let mx = self.width - 1 - x;
-                if SRGB_TO_LINEAR[line[x] as usize] < bayer_row[mx & 3] {
-                    mono[mx / 8] |= 0x80 >> (mx & 7);
-                }
-            }
-            return;
-        }
-
+        // Mirrored placement of output bit `x`.
+        let ink = |mono: &mut [u8], x: usize| {
+            let mx = self.width - 1 - x;
+            mono[mx / 8] |= 0x80 >> (mx & 7);
+        };
         let (kernel, vendor) = match self.mode {
             DitherMode::FloydSteinberg => (FLOYD_STEINBERG, false),
             DitherMode::Atkinson => (ATKINSON, false),
             DitherMode::Vendor16 => (VENDOR, true),
-            DitherMode::Bayer => unreachable!("handled above"),
+            DitherMode::Bayer => {
+                let bayer_row = &BAYER4[(y & 3) as usize];
+                for x in 0..width {
+                    let mx = self.width - 1 - x;
+                    if SRGB_TO_LINEAR[line[x] as usize] < bayer_row[mx & 3] {
+                        ink(mono, x);
+                    }
+                }
+                return;
+            }
         };
 
         for x in 0..width {
@@ -181,11 +182,10 @@ impl Ditherer {
             // Quantise, then decide ink. The vendor lands on one of 16 grey
             // levels and only later thresholds; we go straight to black/white.
             let (quantised, inked) = if vendor {
-                let step = 255.0 / (VENDOR_LEVELS - 1) as f32;
-                let level = (value / step)
+                let level = (value / VENDOR_STEP)
                     .round()
                     .clamp(0.0, (VENDOR_LEVELS - 1) as f32);
-                let grey = level * step;
+                let grey = level * VENDOR_STEP;
                 (grey, grey < VENDOR_INK_THRESHOLD)
             } else if value < 128.0 {
                 (0.0, true)
@@ -194,8 +194,7 @@ impl Ditherer {
             };
 
             if inked {
-                let mx = self.width - 1 - x;
-                mono[mx / 8] |= 0x80 >> (mx & 7);
+                ink(mono, x);
             }
 
             let error = value - quantised;

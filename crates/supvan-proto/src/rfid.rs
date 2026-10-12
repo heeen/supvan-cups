@@ -30,7 +30,7 @@
 
 /// Serialised record length. The vendor allocates a fixed 80-byte buffer and
 /// announces that length over 0x5D; trailing bytes past the last field are zero.
-pub const RFID_RECORD_LEN: usize = 80;
+pub(crate) const RFID_RECORD_LEN: usize = 80;
 
 /// Every populated field sits at this offset within the record; only the 7-byte
 /// UUID precedes it. The vendor writes `databuf[N + offset]` throughout.
@@ -121,25 +121,25 @@ impl RfidMaterial {
     /// A code of 30000 yields `30000000000000`, matching the vendor's
     /// `code + uuid.substring(0, uuid.length - code.length)`.
     pub fn uuid_bytes(&self) -> [u8; 7] {
-        let digits = self.code.to_string();
-        let mut hex = String::with_capacity(14);
-        hex.push_str(&digits);
         // The vendor pads from a 14-char zero string, so an over-long code
-        // truncates rather than overflowing the field.
-        hex.truncate(14);
-        while hex.len() < 14 {
-            hex.push('0');
-        }
-        let mut out = [0u8; 7];
-        for (i, byte) in out.iter_mut().enumerate() {
-            // ASCII digits only, so byte-slicing `hex` here is boundary-safe.
-            *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0);
-        }
-        out
+        // truncates rather than overflowing the field. Each decimal digit is
+        // read back as a hex nibble.
+        let mut nibbles = self
+            .code
+            .to_string()
+            .into_bytes()
+            .into_iter()
+            .map(|d| d - b'0')
+            .chain(std::iter::repeat(0));
+        std::array::from_fn(|_| {
+            let hi = nibbles.next().unwrap_or(0);
+            let lo = nibbles.next().unwrap_or(0);
+            hi << 4 | lo
+        })
     }
 
     /// Serialise to the wire record sent as the 0x5D bulk payload.
-    pub fn encode(&self) -> [u8; RFID_RECORD_LEN] {
+    pub(crate) fn encode(&self) -> [u8; RFID_RECORD_LEN] {
         let mut buf = [0u8; RFID_RECORD_LEN];
         buf[..7].copy_from_slice(&self.uuid_bytes());
 

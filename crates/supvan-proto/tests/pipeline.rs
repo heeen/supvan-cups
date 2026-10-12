@@ -61,15 +61,13 @@ fn run_pipeline(
     width: u32,
     height: u32,
 ) -> (Vec<[u8; PRINT_BUF_SIZE]>, Vec<u8>, Vec<u8>) {
-    let (col_data, num_cols, _col_bpl) = raster_to_column_major(raster, width, height);
-
-    let canvas_width_dots = PRINTHEAD_WIDTH_DOTS;
-    let (canvas, canvas_bpl) = center_in_printhead(&col_data, num_cols, width, canvas_width_dots);
+    let columns = raster_to_column_major(raster, width, height);
+    let canvas = center_in_printhead(&columns, width, PRINTHEAD_WIDTH_DOTS);
 
     let buffers = split_into_buffers(
-        &canvas,
-        canvas_bpl as u8,
-        num_cols as u16,
+        &canvas.data,
+        canvas.bpl,
+        canvas.cols,
         DEFAULT_MARGIN_DOTS,
         DEFAULT_MARGIN_DOTS,
         Density::uniform(4),
@@ -150,16 +148,13 @@ fn test_full_pipeline_checkerboard() {
 /// `split_into_buffers` → `compress_buffers` (skipping raster_to_column_major).
 #[test]
 fn test_full_pipeline_test_pattern() {
-    let (col_data, canvas_width_dots, height_dots, bytes_per_line) = create_test_pattern(40, 30);
-
-    assert_eq!(canvas_width_dots, 384);
-    assert_eq!(height_dots, 240);
-    assert_eq!(bytes_per_line, 48);
+    let pattern = create_test_pattern(40, 30);
+    assert_eq!((pattern.cols, pattern.bpl), (240, 48));
 
     let buffers = split_into_buffers(
-        &col_data,
-        bytes_per_line as u8,
-        height_dots as u16,
+        &pattern.data,
+        pattern.bpl,
+        pattern.cols,
         DEFAULT_MARGIN_DOTS,
         DEFAULT_MARGIN_DOTS,
         Density::uniform(4),
@@ -193,26 +188,25 @@ fn test_pipeline_various_sizes() {
         let height = h_mm * DOTS_PER_MM;
         let raster = generate_row_major_1bpp(width, height, 0xFF);
 
-        let (col_data, num_cols, _) = raster_to_column_major(&raster, width, height);
-        let canvas_width_dots = PRINTHEAD_WIDTH_DOTS;
-        let (canvas, canvas_bpl) =
-            center_in_printhead(&col_data, num_cols, width, canvas_width_dots);
+        let columns = raster_to_column_major(&raster, width, height);
+        let canvas = center_in_printhead(&columns, width, PRINTHEAD_WIDTH_DOTS);
 
-        // Canvas is always 384 dots = 48 bytes per line
+        // The canvas is always the full head: 384 dots = 48 bytes per line.
         assert_eq!(
-            canvas_bpl, PRINTHEAD_BYTES_PER_LINE,
-            "{w_mm}x{h_mm}mm: canvas_bpl mismatch"
+            u32::from(canvas.bpl),
+            PRINTHEAD_BYTES_PER_LINE,
+            "{w_mm}x{h_mm}mm: canvas bpl mismatch"
         );
         assert_eq!(
-            canvas.len(),
-            num_cols as usize * PRINTHEAD_BYTES_PER_LINE as usize,
+            canvas.data.len(),
+            usize::from(canvas.cols) * PRINTHEAD_BYTES_PER_LINE as usize,
             "{w_mm}x{h_mm}mm: canvas size mismatch"
         );
 
         let buffers = split_into_buffers(
-            &canvas,
-            canvas_bpl as u8,
-            num_cols as u16,
+            &canvas.data,
+            canvas.bpl,
+            canvas.cols,
             DEFAULT_MARGIN_DOTS,
             DEFAULT_MARGIN_DOTS,
             Density::uniform(4),

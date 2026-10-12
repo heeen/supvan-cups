@@ -12,13 +12,13 @@ use std::time::Duration;
 pub(crate) const HID_REPORT_SIZE: usize = 64;
 
 /// A raw HID device opened via `/dev/hidrawN`.
-pub struct HidrawDevice {
+pub(crate) struct HidrawDevice {
     file: File,
 }
 
 impl HidrawDevice {
     /// Open a hidraw device by path (e.g. "/dev/hidraw7").
-    pub fn open(path: &str) -> Result<Self> {
+    pub(crate) fn open(path: &str) -> Result<Self> {
         let file = File::options().read(true).write(true).open(path)?;
         Ok(Self { file })
     }

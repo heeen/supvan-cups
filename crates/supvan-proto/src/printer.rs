@@ -181,7 +181,7 @@ impl Printer {
     /// Only meaningful on blank stock. Genuine consumables carry a real tag and
     /// the vendor deliberately skips this for them; overwriting one is not
     /// something the protocol offers a way back from.
-    pub async fn set_rfid_data(&self, record: &[u8]) -> Result<()> {
+    async fn set_rfid_data(&self, record: &[u8]) -> Result<()> {
         let len = u16::try_from(record.len())
             .map_err(|_| Error::InvalidParam(format!("RFID record too long: {}", record.len())))?;
         log::info!("SET_RFID_DATA: {len} bytes");
