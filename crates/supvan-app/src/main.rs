@@ -11,23 +11,23 @@
 mod battery_provider;
 mod device;
 mod dump;
+mod env;
 mod ipp_job;
 mod ipp_server;
 mod job;
 mod mock;
 mod printer_device;
 
-use std::env;
+/// IPP port when `SUPVAN_PORT` isn't set — the printer-app convention's 8631.
+const DEFAULT_PORT: u16 = 8631;
 
 #[tokio::main]
 async fn main() {
     let _ = env_logger::try_init();
 
-    let host = env::var("SUPVAN_HOST").unwrap_or_else(|_| "0.0.0.0".into());
-    let port: u16 = env::var("SUPVAN_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8631);
+    let host = std::env::var("SUPVAN_HOST").unwrap_or_else(|_| "0.0.0.0".into());
+    let port =
+        env::parsed("SUPVAN_PORT", "a port number", |s| s.parse().ok()).unwrap_or(DEFAULT_PORT);
 
     if let Err(e) = ipp_server::run_server(&host, port).await {
         log::error!("server error: {e}");

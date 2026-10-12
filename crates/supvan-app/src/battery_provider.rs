@@ -16,6 +16,10 @@ use dbus_crossroads::{Crossroads, IfaceToken};
 const PROVIDER_ROOT: &str = "/com/supvan/battery";
 const BLUEZ_SERVICE: &str = "org.bluez";
 const BATTERY_PROVIDER_IFACE: &str = "org.bluez.BatteryProvider1";
+const PROVIDER_MANAGER_IFACE: &str = "org.bluez.BatteryProviderManager1";
+/// The adapter BlueZ registers battery providers on.
+const ADAPTER_PATH: &str = "/org/bluez/hci0";
+const DBUS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Commands sent to the battery provider thread.
 enum BatteryCmd {
@@ -89,9 +93,9 @@ fn start() -> Option<BatteryProviderHandle> {
     }
 
     // Register with BlueZ BatteryProviderManager1
-    let bluez_proxy = conn.with_proxy(BLUEZ_SERVICE, "/org/bluez/hci0", Duration::from_secs(5));
+    let bluez_proxy = conn.with_proxy(BLUEZ_SERVICE, ADAPTER_PATH, DBUS_TIMEOUT);
     if let Err(e) = bluez_proxy.method_call::<(), _, _, _>(
-        "org.bluez.BatteryProviderManager1",
+        PROVIDER_MANAGER_IFACE,
         "RegisterBatteryProvider",
         (Path::from(PROVIDER_ROOT),),
     ) {
@@ -186,10 +190,9 @@ fn run_provider(conn: Arc<SyncConnection>, rx: mpsc::Receiver<BatteryCmd>) {
                     log::info!("battery_provider: shutting down");
 
                     // Unregister from BlueZ
-                    let proxy =
-                        conn.with_proxy(BLUEZ_SERVICE, "/org/bluez/hci0", Duration::from_secs(5));
+                    let proxy = conn.with_proxy(BLUEZ_SERVICE, ADAPTER_PATH, DBUS_TIMEOUT);
                     let _ = proxy.method_call::<(), _, _, _>(
-                        "org.bluez.BatteryProviderManager1",
+                        PROVIDER_MANAGER_IFACE,
                         "UnregisterBatteryProvider",
                         (Path::from(PROVIDER_ROOT),),
                     );

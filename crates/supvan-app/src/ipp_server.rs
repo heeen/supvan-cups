@@ -1,7 +1,7 @@
 //! Application entry: IPP server, discovery, state.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use ipp_printer_app::{
     DeviceBackend, DiscoveredDevice, JobContext, JobFailure, JobOutcome, PollStatus, PrinterConfig,
@@ -9,6 +9,7 @@ use ipp_printer_app::{
 };
 use parking_lot::RwLock;
 use supvan_proto::rfid::{RfidMaterial, heat_presets};
+use supvan_proto::status::MaterialInfo;
 
 use crate::ipp_job::{config_from_family, run_cups_raster_job};
 use supvan_discover::ble::BleCandidate;
@@ -16,7 +17,7 @@ use supvan_discover::bt::BtCandidate;
 use supvan_discover::models;
 use supvan_discover::usb::UsbCandidate;
 
-/// Threshold below which the printer-state-reasons gets the MEDIA_LOW flag.
+/// Labels remaining at or below which `printer-state-reasons` gets `media-low`.
 /// Conservative — most label-printer ops want a few minutes of warning.
 const MEDIA_LOW_THRESHOLD: u32 = 20;
 
@@ -30,9 +31,27 @@ struct RollFingerprint {
     height_mm: u8,
 }
 
-fn roll_cache() -> &'static Mutex<HashMap<String, RollFingerprint>> {
-    static C: OnceLock<Mutex<HashMap<String, RollFingerprint>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(HashMap::new()))
+impl From<&MaterialInfo> for RollFingerprint {
+    fn from(m: &MaterialInfo) -> Self {
+        Self {
+            uuid: m.uuid.clone(),
+            code: m.code.clone(),
+            width_mm: m.width_mm,
+            height_mm: m.height_mm,
+        }
+    }
+}
+
+/// Last-seen roll per printer name.
+static ROLLS: LazyLock<Mutex<HashMap<String, RollFingerprint>>> = LazyLock::new(Default::default);
+
+/// The current config of the printer named `name`.
+fn config_by_name(registry: &PrinterRegistry, name: &str) -> Option<PrinterConfig> {
+    registry
+        .read()
+        .iter()
+        .find(|p| p.config.name == name)
+        .map(|p| p.config.clone())
 }
 
 pub struct SupvanDeviceBackend;
@@ -81,9 +100,16 @@ impl DeviceBackend for SupvanDeviceBackend {
         // Collect all candidates. USB probes RD_DEV_NAME silently per device;
         // BT pulls the firmware-reported name from BlueZ; BLE scans for
         // E11/E12-class advertisers (no-op without the `ble` feature).
-        let usb = supvan_discover::usb::list_candidates().await;
-        let bt = supvan_discover::bt::list_candidates();
-        let ble = supvan_discover::ble::list_candidates().await;
+        // BT discovery is blocking D-Bus plus a multi-second scan window.
+        let (usb, bt, ble) = tokio::join!(
+            supvan_discover::usb::list_candidates(),
+            tokio::task::spawn_blocking(supvan_discover::bt::list_candidates),
+            supvan_discover::ble::list_candidates(),
+        );
+        let bt = bt.unwrap_or_else(|e| {
+            log::warn!("discover: BT scan task failed: {e}");
+            Vec::new()
+        });
 
         // Group by printer-reported name. USB candidates carry their
         // `device_sn` (parsed from `RETURN_MAT` at offset 40); BT and BLE carry
@@ -143,7 +169,8 @@ impl DeviceBackend for SupvanDeviceBackend {
                 .or_else(|| models::bt_model_for_name(&name).map(str::to_string))
                 .unwrap_or_else(|| "T50 Series".to_string());
             let info = format!("Supvan {model} {name}");
-            let uri = format!("supvan://{}", slug(&name));
+            let slug = slug(&name);
+            let uri = format!("{}{slug}", crate::device::SUPVAN_SCHEME);
             let device_id = format!("MFG:Supvan;MDL:{model};CMD:SUPVAN;");
             log::info!(
                 "discover: emitting {uri} (usb={}, bt={}, ble={})",
@@ -153,7 +180,7 @@ impl DeviceBackend for SupvanDeviceBackend {
             );
             // Register the name → transport mapping so open_supvan can resolve it.
             crate::device::register_supvan(
-                &slug(&name),
+                &slug,
                 usb.as_ref().map(|u| u.hidraw_path.clone()),
                 bt.as_ref().map(|b| b.address.clone()),
                 ble.as_ref().map(|e| e.address.clone()),
@@ -168,8 +195,7 @@ impl DeviceBackend for SupvanDeviceBackend {
     }
 
     async fn poll_status(&self, config: &PrinterConfig) -> Option<PollStatus> {
-        let dev = crate::device::open_uri(&config.device_uri).await;
-        let Some(dev) = dev else {
+        let Some(dev) = crate::device::open_uri(&config.device_uri).await else {
             // Device unreachable (powered off / unplugged / BT down). Report
             // OFFLINE so the framework marks us printer-state=stopped and CUPS
             // holds queued jobs until it's back — instead of accepting a job
@@ -187,13 +213,8 @@ impl DeviceBackend for SupvanDeviceBackend {
         // Material query: surfaces labels-remaining + roll-swap detection.
         // Skipped on mock devices (dev.material() returns None).
         if let Some(mat) = dev.material().await {
-            let fp = RollFingerprint {
-                uuid: mat.uuid.clone(),
-                code: mat.code.clone(),
-                width_mm: mat.width_mm,
-                height_mm: mat.height_mm,
-            };
-            let mut cache = roll_cache().lock().unwrap();
+            let fp = RollFingerprint::from(&mat);
+            let mut cache = ROLLS.lock().unwrap();
             let key = config.name.clone();
             match cache.get(&key) {
                 Some(prev) if *prev != fp && !prev.uuid.is_empty() => {
@@ -244,7 +265,7 @@ impl DeviceBackend for SupvanDeviceBackend {
                 if remaining == 0 {
                     reasons |= PrinterReason::MEDIA_EMPTY;
                 } else if remaining <= MEDIA_LOW_THRESHOLD {
-                    reasons |= PrinterReason::MARKER_SUPPLY_LOW;
+                    reasons |= PrinterReason::MEDIA_LOW;
                 }
                 // The firmware reports remaining *labels*, not a percentage, and
                 // we don't know the roll's original count. Clamp to 0–100 as a
@@ -277,7 +298,7 @@ impl DeviceBackend for SupvanDeviceBackend {
             let family = models::family_for_model_hint(mdl);
             return Some(family.driver_name.to_string_lossy().into_owned());
         }
-        if device_uri.starts_with("supvan://") || device_uri.starts_with("mock://") {
+        if crate::device::is_ours(device_uri) {
             return Some(
                 models::default_family()
                     .driver_name
@@ -306,24 +327,14 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         move |ctx: JobContext, raster: Arc<[u8]>, copies: u32| -> ipp_printer_app::PrintJobFuture {
             let registry_print = registry_print.clone();
             Box::pin(async move {
-                let cfg = {
-                    let guard = registry_print.read();
-                    match guard.iter().find(|p| p.config.name == ctx.printer_name) {
-                        Some(p) => p.config.clone(),
-                        None => {
-                            return JobOutcome::Failed(JobFailure::other(format!(
-                                "printer not found: {}",
-                                ctx.printer_name
-                            )));
-                        }
-                    }
+                let Some(cfg) = config_by_name(&registry_print, &ctx.printer_name) else {
+                    return JobOutcome::Failed(JobFailure::other(format!(
+                        "printer not found: {}",
+                        ctx.printer_name
+                    )));
                 };
                 let spec = crate::ipp_job::JobSpec {
-                    printer_name: &cfg.name,
-                    device_uri: &cfg.device_uri,
-                    driver_name: &cfg.driver_name,
-                    darkness: cfg.darkness,
-                    printhead_width_dots: cfg.printhead_width_dots,
+                    config: &cfg,
                     copies,
                     print_quality: ctx.print_quality,
                 };
@@ -370,15 +381,9 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
         move |printer_name: String, media: ipp_printer_app::ReadyMedia| {
             let registry_media = registry_media.clone();
             Box::pin(async move {
-                let device_uri = {
-                    let guard = registry_media.read();
-                    guard
-                        .iter()
-                        .find(|p| p.config.name == printer_name)
-                        .map(|p| p.config.device_uri.clone())
-                        .ok_or_else(|| format!("no printer named {printer_name}"))?
-                };
-                apply_media(&printer_name, &device_uri, &media).await
+                let config = config_by_name(&registry_media, &printer_name)
+                    .ok_or_else(|| format!("no printer named {printer_name}"))?;
+                apply_media(&printer_name, &config.device_uri, &media).await
             })
         },
     );
@@ -406,16 +411,13 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
 /// keeps that an explicit choice rather than a silent reset, and matches how the
 /// app takes the rest of its configuration.
 fn configured_heat() -> (u16, u16) {
-    let Ok(raw) = std::env::var("SUPVAN_HEAT") else {
-        return heat_presets::STANDARD;
-    };
-    let parsed = raw
-        .split_once(':')
-        .and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)));
-    parsed.unwrap_or_else(|| {
-        log::warn!("SUPVAN_HEAT: expected `heat5:heat40`, got {raw:?}; using the standard profile");
-        heat_presets::STANDARD
-    })
+    crate::env::parsed("SUPVAN_HEAT", "`heat5:heat40`", parse_heat)
+        .unwrap_or(heat_presets::STANDARD)
+}
+
+fn parse_heat(raw: &str) -> Option<(u16, u16)> {
+    let (h5, h40) = raw.split_once(':')?;
+    Some((h5.trim().parse().ok()?, h40.trim().parse().ok()?))
 }
 
 /// Whether this material record is ours to overwrite.
@@ -475,8 +477,8 @@ async fn apply_media(
         .await
         .ok_or_else(|| format!("cannot reach {device_uri}"))?;
     let printer = dev
-        .printer
-        .as_ref()
+        .printer()
+        .await
         .ok_or("mock device: nothing to provision")?;
 
     let current = printer
@@ -533,15 +535,10 @@ async fn apply_media(
 
     // Record the fingerprint we just wrote, so the status poller doesn't report
     // our own change as an operator swapping the roll.
-    roll_cache().lock().unwrap().insert(
-        printer_name.to_string(),
-        RollFingerprint {
-            uuid: written.uuid.clone(),
-            code: written.code.clone(),
-            width_mm: written.width_mm,
-            height_mm: written.height_mm,
-        },
-    );
+    ROLLS
+        .lock()
+        .unwrap()
+        .insert(printer_name.to_string(), RollFingerprint::from(&written));
     log::info!(
         "{printer_name}: media set to {}x{}mm, heat {}/{}",
         written.width_mm,
@@ -560,7 +557,7 @@ fn prune_stale_supvan(registry: &PrinterRegistry) {
     let mut guard = registry.write();
     guard.retain(|p| {
         let uri = &p.config.device_uri;
-        let keep = uri.starts_with("supvan://") || uri.starts_with("mock://");
+        let keep = crate::device::is_ours(uri);
         if !keep {
             log::info!("pruning legacy-scheme printer: {uri}");
         }
@@ -598,25 +595,10 @@ mod tests {
     /// rather than fail a media change — and must never silently yield 0/0,
     /// which would print nothing at all.
     #[test]
-    fn heat_config_falls_back_on_junk() {
-        // Serialised via a mutex-free approach: set, read, restore, since env is
-        // process-global and other tests may run in parallel.
-        let restore = std::env::var("SUPVAN_HEAT").ok();
-
-        unsafe { std::env::set_var("SUPVAN_HEAT", "1700:1200") };
-        assert_eq!(configured_heat(), (1700, 1200));
-
-        unsafe { std::env::set_var("SUPVAN_HEAT", "nonsense") };
-        assert_eq!(configured_heat(), heat_presets::STANDARD);
-
-        unsafe { std::env::set_var("SUPVAN_HEAT", "1700") };
-        assert_eq!(configured_heat(), heat_presets::STANDARD);
-
-        unsafe { std::env::remove_var("SUPVAN_HEAT") };
-        assert_eq!(configured_heat(), heat_presets::STANDARD);
-
-        if let Some(v) = restore {
-            unsafe { std::env::set_var("SUPVAN_HEAT", v) };
-        }
+    fn heat_config_rejects_junk() {
+        assert_eq!(parse_heat("1700:1200"), Some((1700, 1200)));
+        assert_eq!(parse_heat(" 1700 : 1200 "), Some((1700, 1200)));
+        assert_eq!(parse_heat("nonsense"), None);
+        assert_eq!(parse_heat("1700"), None);
     }
 }
