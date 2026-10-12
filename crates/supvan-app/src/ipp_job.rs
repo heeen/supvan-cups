@@ -19,32 +19,38 @@ const DOTS_PER_MM: i32 = 8;
 /// hardware delivers.
 const MIN_LABEL_MM: i32 = 10;
 
+/// Everything a job needs from the printer config and the IPP request, minus
+/// the document itself.
+pub struct JobSpec<'a> {
+    pub printer_name: &'a str,
+    pub device_uri: &'a str,
+    pub driver_name: &'a str,
+    pub darkness: i32,
+    pub printhead_width_dots: u32,
+    /// Copies from the request; 0 falls back to the raster header's count.
+    pub copies: u32,
+    /// `print-quality` enum, when the client sent one.
+    pub print_quality: Option<u8>,
+}
+
 /// Run a full CUPS raster document through [`KsJob`]. Runs on the caller's
 /// tokio runtime (the framework's print worker) — no nested runtime.
-pub async fn run_cups_raster_job(
-    printer_name: &str,
-    device_uri: &str,
-    darkness: i32,
-    printhead_width_dots: u32,
-    driver_name: &str,
-    raster: &[u8],
-    copies_override: u32,
-) -> Result<(), JobFailure> {
+pub async fn run_cups_raster_job(spec: &JobSpec<'_>, raster: &[u8]) -> Result<(), JobFailure> {
+    let JobSpec {
+        printer_name,
+        device_uri,
+        driver_name,
+        darkness,
+        printhead_width_dots,
+        copies: copies_override,
+        print_quality,
+    } = *spec;
     let dev = crate::device::open_uri(device_uri).await.ok_or_else(|| {
         JobFailure::new(
             ipp_printer_app::PrinterReason::OFFLINE,
             format!("cannot open device {device_uri}"),
         )
     })?;
-
-    let record = job_record(
-        printer_name,
-        device_uri,
-        driver_name,
-        printhead_width_dots,
-        darkness,
-    );
-    let handle = PrinterHandle { record: &record };
 
     let cursor = Cursor::new(raster);
     let pinned = pin!(cursor.compat());
@@ -56,6 +62,23 @@ pub async fn run_cups_raster_job(
         .next_page()
         .await
         .map_err(|e| JobFailure::other(format!("cups raster page: {e}")))?;
+
+    // Darkness can ride in the first page header, so the record waits for it.
+    let record = job_record(
+        printer_name,
+        device_uri,
+        driver_name,
+        printhead_width_dots,
+        effective_darkness(
+            darkness,
+            page_next
+                .as_ref()
+                .map(|p| p.header().v1.cups_compression)
+                .unwrap_or(0),
+            print_quality,
+        ),
+    );
+    let handle = PrinterHandle { record: &record };
 
     let mut job: Option<KsJob> = None;
     let mut page_num = 0u32;
@@ -142,19 +165,76 @@ fn job_record(
 
 /// Decode an `image/jpeg` document and print it. Decodes to grayscale,
 /// contain-fits it onto the loaded label (aspect preserved, centered, white
+/// How far `print-quality` moves darkness either side of the baseline.
+///
+/// Darkness 0–100 maps onto the protocol's 0–15 density, so ~6.7 points is one
+/// density step; 15 is two — enough to see, small enough that Draft on a light
+/// baseline doesn't stop marking altogether.
+const QUALITY_DARKNESS_STEP: i32 = 15;
+
+/// Print darkness for a job, 0–100.
+///
+/// Three sources, and the order is deliberate:
+///
+/// 1. `cupsCompression` in the raster header. This is the convention CUPS' own
+///    label drivers follow — `rastertolabel.c` scales it as
+///    `15 * cupsCompression / 100`, exactly the 0..15 the Supvan protocol
+///    takes — so a value here is an explicit per-job darkness and wins
+///    outright. CUPS 2.4's driverless PPD hardcodes the field to 0, so nothing
+///    sets it today; a custom PPD or a newer CUPS would.
+/// 2. `SUPVAN_DARKNESS`, else the configured value — the baseline.
+/// 3. `print-quality`, applied as a *nudge* to that baseline rather than an
+///    absolute. CUPS marks `cupsPrintQuality` Normal by default and converts
+///    it on every job, so treating quality as absolute would pin darkness to
+///    one of three values and make the baseline unreachable.
+fn effective_darkness(configured: i32, cups_compression: u32, quality: Option<u8>) -> i32 {
+    if (1..=100).contains(&cups_compression) {
+        log::info!("darkness {cups_compression} from the raster header");
+        return cups_compression as i32;
+    }
+
+    let base = match std::env::var("SUPVAN_DARKNESS") {
+        Ok(raw) => match raw.trim().parse::<i32>() {
+            Ok(v) if (0..=100).contains(&v) => v,
+            _ => {
+                log::warn!("SUPVAN_DARKNESS: expected 0-100, got {raw:?}; using {configured}");
+                configured
+            }
+        },
+        Err(_) => configured,
+    };
+
+    // RFC 8011: 3 draft, 4 normal, 5 high.
+    let darkness = match quality {
+        Some(3) => base - QUALITY_DARKNESS_STEP,
+        Some(5) => base + QUALITY_DARKNESS_STEP,
+        _ => base,
+    }
+    .clamp(0, 100);
+    if darkness != base {
+        log::info!("darkness {darkness} (baseline {base}, print-quality {quality:?})");
+    }
+    darkness
+}
+
 /// padding), then drives [`KsJob`]'s existing 8bpp path (dither → device).
 ///
 /// JPEG decode + fit is synchronous; the device transfer is awaited like the
 /// raster path. Runs on the caller's tokio runtime (the print worker).
 pub async fn run_jpeg_job(
-    printer_name: &str,
-    device_uri: &str,
-    darkness: i32,
-    printhead_width_dots: u32,
+    spec: &JobSpec<'_>,
     media_size_hmm: [i32; 2],
     jpeg: &[u8],
-    copies: u32,
 ) -> Result<(), JobFailure> {
+    let JobSpec {
+        printer_name,
+        device_uri,
+        darkness,
+        printhead_width_dots,
+        copies,
+        print_quality,
+        ..
+    } = *spec;
     let img = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)
         .map_err(|e| JobFailure::other(format!("jpeg decode: {e}")))?
         .to_luma8();
@@ -174,7 +254,13 @@ pub async fn run_jpeg_job(
     })?;
     // The throwaway record only feeds KsJob's darkness + printhead width; the
     // driver name is irrelevant on this path.
-    let record = job_record(printer_name, device_uri, "", printhead_width_dots, darkness);
+    let record = job_record(
+        printer_name,
+        device_uri,
+        "",
+        printhead_width_dots,
+        effective_darkness(darkness, 0, print_quality),
+    );
     let handle = PrinterHandle { record: &record };
 
     // 8bpp grayscale, one byte per pixel; KsJob's 8bpp branch dithers each row.
@@ -292,6 +378,50 @@ pub fn config_from_family(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CUPS marks `cupsPrintQuality` Normal by default and converts it on
+    /// every job, so quality has to nudge the baseline rather than replace it
+    /// — otherwise SUPVAN_DARKNESS and the configured value are unreachable.
+    #[test]
+    fn print_quality_nudges_the_baseline() {
+        assert_eq!(effective_darkness(50, 0, Some(4)), 50, "normal keeps it");
+        assert_eq!(effective_darkness(50, 0, None), 50, "absent keeps it");
+        assert_eq!(effective_darkness(50, 0, Some(3)), 35, "draft lightens");
+        assert_eq!(effective_darkness(50, 0, Some(5)), 65, "high darkens");
+    }
+
+    /// The nudge cannot push darkness outside the protocol's range.
+    #[test]
+    fn quality_nudges_are_clamped() {
+        assert_eq!(effective_darkness(5, 0, Some(3)), 0);
+        assert_eq!(effective_darkness(95, 0, Some(5)), 100);
+    }
+
+    /// An explicit header darkness is a per-job absolute, so quality does not
+    /// move it.
+    #[test]
+    fn header_darkness_ignores_quality() {
+        assert_eq!(effective_darkness(50, 80, Some(3)), 80);
+        assert_eq!(effective_darkness(50, 80, Some(5)), 80);
+    }
+
+    /// A raster header that carries darkness wins over the configured value —
+    /// the CUPS label-driver convention.
+    #[test]
+    fn header_darkness_overrides_the_config() {
+        assert_eq!(effective_darkness(50, 80, None), 80);
+        assert_eq!(effective_darkness(50, 1, None), 1);
+        assert_eq!(effective_darkness(50, 100, None), 100);
+    }
+
+    /// 0 means "unset" (what CUPS 2.4's driverless PPD emits), and anything
+    /// past 100 is not a darkness — both fall through to the config.
+    #[test]
+    fn an_unset_or_bogus_header_falls_through() {
+        assert_eq!(effective_darkness(37, 0, None), 37);
+        assert_eq!(effective_darkness(37, 101, None), 37);
+        assert_eq!(effective_darkness(37, u32::MAX, None), 37);
+    }
     use image::{GrayImage, Luma};
 
     #[test]

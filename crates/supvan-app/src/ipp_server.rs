@@ -225,6 +225,12 @@ impl DeviceBackend for SupvanDeviceBackend {
             // Publish the loaded roll as the dynamic media-ready / media-col-ready.
             // PWG self-describing name uses the om_ (metric) class; size in
             // hundredths of a millimetre.
+            //
+            // The roll's true width goes out here, unclamped: the stock the
+            // 48mm head cannot reach on a 50mm roll is reported as a hard
+            // margin instead (see `side_margin_hmm` in the IPP layer), so a
+            // client composes into the imageable area rather than having the
+            // driver crop a finished page.
             let (w, h) = (mat.width_mm as i32, mat.height_mm as i32);
             if w > 0 && h > 0 {
                 ready_media = Some(ReadyMedia {
@@ -312,6 +318,15 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                         }
                     }
                 };
+                let spec = crate::ipp_job::JobSpec {
+                    printer_name: &cfg.name,
+                    device_uri: &cfg.device_uri,
+                    driver_name: &cfg.driver_name,
+                    darkness: cfg.darkness,
+                    printhead_width_dots: cfg.printhead_width_dots,
+                    copies,
+                    print_quality: ctx.print_quality,
+                };
                 // image/jpeg is decoded in-process (run_jpeg_job); everything else
                 // is CUPS/PWG raster (CUPS' driverless path already rasterizes).
                 let result = if ctx.document_format == "image/jpeg" {
@@ -323,27 +338,9 @@ pub async fn run_server(host: &str, port: u16) -> std::io::Result<()> {
                         .first()
                         .copied()
                         .unwrap_or(DEFAULT_MEDIA_SIZE_HMM);
-                    crate::ipp_job::run_jpeg_job(
-                        &cfg.name,
-                        &cfg.device_uri,
-                        cfg.darkness,
-                        cfg.printhead_width_dots,
-                        media_size,
-                        &raster,
-                        copies,
-                    )
-                    .await
+                    crate::ipp_job::run_jpeg_job(&spec, media_size, &raster).await
                 } else {
-                    run_cups_raster_job(
-                        &cfg.name,
-                        &cfg.device_uri,
-                        cfg.darkness,
-                        cfg.printhead_width_dots,
-                        &cfg.driver_name,
-                        &raster,
-                        copies,
-                    )
-                    .await
+                    run_cups_raster_job(&spec, &raster).await
                 };
                 match result {
                     Ok(()) => JobOutcome::Completed,
