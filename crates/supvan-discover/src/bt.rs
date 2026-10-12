@@ -1,19 +1,20 @@
 //! BlueZ D-Bus discovery for Supvan printers.
 //!
 //! 1. Connect to system D-Bus, find adapter
-//! 2. Run a 4-second active BT Classic scan
+//! 2. Run a short active BT Classic scan
 //! 3. Auto-pair matching unpaired devices that could speak SPP
 //! 4. Report matching paired devices with SPP UUID
 
 use dbus::blocking::Connection;
 use dbus::blocking::stdintf::org_freedesktop_dbus::ObjectManager;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::models;
 
-type PropMap = std::collections::HashMap<String, dbus::arg::Variant<Box<dyn dbus::arg::RefArg>>>;
-type IfaceMap = std::collections::HashMap<String, PropMap>;
-type ManagedObjects = std::collections::HashMap<dbus::Path<'static>, IfaceMap>;
+type PropMap = HashMap<String, dbus::arg::Variant<Box<dyn dbus::arg::RefArg>>>;
+type IfaceMap = HashMap<String, PropMap>;
+type ManagedObjects = HashMap<dbus::Path<'static>, IfaceMap>;
 
 const SPP_UUID_PREFIX: &str = "00001101-";
 const BLUEZ_SERVICE: &str = "org.bluez";
@@ -72,47 +73,39 @@ fn find_adapter(objects: &ManagedObjects) -> Option<dbus::Path<'static>> {
     found
 }
 
+/// How long the active BR/EDR inquiry runs.
+const SCAN_WINDOW: Duration = Duration::from_secs(4);
+
 fn run_discovery(conn: &Connection, adapter: &dbus::Path<'_>) {
     let proxy = conn.with_proxy(BLUEZ_SERVICE, adapter, Duration::from_secs(5));
 
-    log::debug!("run_discovery: setting filter to bredr");
-    let filter: std::collections::HashMap<&str, dbus::arg::Variant<Box<dyn dbus::arg::RefArg>>> = {
-        let mut m = std::collections::HashMap::new();
-        m.insert(
-            "Transport",
-            dbus::arg::Variant(Box::new("bredr".to_string()) as Box<dyn dbus::arg::RefArg>),
-        );
-        m
-    };
+    let filter = HashMap::from([(
+        "Transport",
+        dbus::arg::Variant(Box::new("bredr".to_string()) as Box<dyn dbus::arg::RefArg>),
+    )]);
     if let Err(e) =
         proxy.method_call::<(), _, _, _>("org.bluez.Adapter1", "SetDiscoveryFilter", (filter,))
     {
         log::warn!("run_discovery: SetDiscoveryFilter failed: {e}");
     }
 
-    log::info!("run_discovery: starting 4s BT Classic scan");
-    match proxy.method_call::<(), _, _, _>("org.bluez.Adapter1", "StartDiscovery", ()) {
-        Ok(()) => {}
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("InProgress") {
-                log::debug!("run_discovery: scan already in progress");
-            } else {
-                log::warn!("run_discovery: StartDiscovery failed: {e}");
-                return;
-            }
+    log::info!("run_discovery: starting a {SCAN_WINDOW:?} BT Classic scan");
+    if let Err(e) = proxy.method_call::<(), _, _, _>("org.bluez.Adapter1", "StartDiscovery", ()) {
+        if e.name() == Some("org.bluez.Error.InProgress") {
+            log::debug!("run_discovery: scan already in progress");
+        } else {
+            log::warn!("run_discovery: StartDiscovery failed: {e}");
+            return;
         }
     }
 
-    std::thread::sleep(Duration::from_secs(4));
+    std::thread::sleep(SCAN_WINDOW);
 
-    if let Err(e) = proxy.method_call::<(), _, _, _>("org.bluez.Adapter1", "StopDiscovery", ()) {
-        let msg = e.to_string();
-        if !msg.contains("NotReady") {
-            log::warn!("run_discovery: StopDiscovery failed: {e}");
-        }
+    if let Err(e) = proxy.method_call::<(), _, _, _>("org.bluez.Adapter1", "StopDiscovery", ())
+        && e.name() != Some("org.bluez.Error.NotReady")
+    {
+        log::warn!("run_discovery: StopDiscovery failed: {e}");
     }
-
     log::info!("run_discovery: scan complete");
 }
 
@@ -122,190 +115,108 @@ fn auto_pair_device(conn: &Connection, path: &dbus::Path<'_>, addr: &str) {
     log::info!("auto_pair_device: pairing {addr} ({path})");
     match proxy.method_call::<(), _, _, _>("org.bluez.Device1", "Pair", ()) {
         Ok(()) => log::info!("auto_pair_device: paired {addr}"),
+        Err(e) if e.name() == Some("org.bluez.Error.AlreadyExists") => {
+            log::debug!("auto_pair_device: {addr} already paired");
+        }
+        Err(e) if e.to_string().contains("AgentNotAvailable") => {
+            log::warn!("auto_pair_device: {addr} needs an agent for pairing — skipping: {e}");
+            return;
+        }
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("AlreadyExists") {
-                log::debug!("auto_pair_device: {addr} already paired");
-            } else if msg.contains("AgentNotAvailable") {
-                log::warn!("auto_pair_device: {addr} needs agent for pairing — skipping");
-                return;
-            } else {
-                log::error!("auto_pair_device: Pair({addr}) failed: {e}");
-                return;
-            }
+            log::error!("auto_pair_device: Pair({addr}) failed: {e}");
+            return;
         }
     }
 
     use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
     if let Err(e) = proxy.set("org.bluez.Device1", "Trusted", true) {
         log::warn!("auto_pair_device: failed to set Trusted on {addr}: {e}");
-    } else {
-        log::debug!("auto_pair_device: set Trusted=true on {addr}");
     }
 }
 
-/// Discover Supvan printers via BlueZ D-Bus.
-///
-/// For each found device, calls `cb(device_info, device_uri, device_id)`.
-/// Return `false` from the callback to stop enumeration.
-/// Returns true if enumeration succeeded (even if no devices found).
-pub fn discover<F>(mut cb: F) -> bool
-where
-    F: FnMut(&str, &str, &str) -> bool,
-{
-    log::info!("discover: starting");
-
-    let conn = match Connection::new_system() {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("discover: D-Bus connection failed: {e}");
-            return false;
-        }
-    };
-
-    // Phase 1: Get initial state, find adapter
-    log::debug!("discover: phase 1 — GetManagedObjects (pre-scan)");
-    let proxy = conn.with_proxy(BLUEZ_SERVICE, "/", Duration::from_secs(5));
-    let objects: ManagedObjects = match proxy.get_managed_objects() {
-        Ok(o) => o,
-        Err(e) => {
-            log::error!("discover: GetManagedObjects failed: {e}");
-            return false;
-        }
-    };
-
-    let adapter = match find_adapter(&objects) {
-        Some(a) => a,
-        None => return true,
-    };
-
-    // Phase 2: Active BT Classic scan
-    log::debug!("discover: phase 2 — active scan");
-    run_discovery(&conn, &adapter);
-
-    // Phase 3: Re-read objects, auto-pair matching unpaired devices
-    log::debug!("discover: phase 3 — GetManagedObjects (post-scan), auto-pair");
-    let objects: ManagedObjects = match proxy.get_managed_objects() {
-        Ok(o) => o,
-        Err(e) => {
-            log::error!("discover: GetManagedObjects (post-scan) failed: {e}");
-            return false;
-        }
-    };
-
-    for (path, ifaces) in &objects {
-        let props = match ifaces.get("org.bluez.Device1") {
-            Some(p) => p,
-            None => continue,
-        };
-
+/// BlueZ devices that look like Supvan printers: `(path, properties,
+/// address, name)`.
+fn supvan_devices(
+    objects: &ManagedObjects,
+) -> impl Iterator<Item = (&dbus::Path<'static>, &PropMap, String, String)> {
+    objects.iter().filter_map(|(path, ifaces)| {
+        let props = ifaces.get("org.bluez.Device1")?;
+        let address = get_str_prop(props, "Address")?;
         let name = get_str_prop(props, "Name").unwrap_or_default();
-        let address = match get_str_prop(props, "Address") {
-            Some(a) => a,
-            None => continue,
-        };
-
-        if !models::is_matching_bt_device(&address, &name) {
-            continue;
-        }
-
-        let paired = get_bool_prop(props, "Paired").unwrap_or(false);
-        if paired {
-            continue;
-        }
-
-        if !may_speak_spp(props) {
-            log::debug!("discover: {name} ({address}) — advertises no SPP, not pairing");
-            continue;
-        }
-
-        log::info!("discover: found unpaired match: {name} ({address})");
-        auto_pair_device(&conn, path, &address);
-    }
-
-    // Phase 4: Final read — report matching paired devices with SPP
-    log::debug!("discover: phase 4 — GetManagedObjects (post-pair), report");
-    let objects: ManagedObjects = match proxy.get_managed_objects() {
-        Ok(o) => o,
-        Err(e) => {
-            log::error!("discover: GetManagedObjects (post-pair) failed: {e}");
-            return false;
-        }
-    };
-
-    for (path, ifaces) in &objects {
-        let path_str = path.to_string();
-        if !path_str.starts_with("/org/bluez/hci") || !path_str.contains("/dev_") {
-            continue;
-        }
-
-        let props = match ifaces.get("org.bluez.Device1") {
-            Some(p) => p,
-            None => continue,
-        };
-
-        let address = match get_str_prop(props, "Address") {
-            Some(a) => a,
-            None => continue,
-        };
-
-        let name = get_str_prop(props, "Name").unwrap_or_default();
-
-        if !has_spp_uuid(props) {
-            log::debug!("discover: {name} ({address}) — no SPP UUID, skipping");
-            continue;
-        }
-
-        if !models::is_matching_bt_device(&address, &name) {
-            log::debug!("discover: {name} ({address}) — not a Supvan printer, skipping");
-            continue;
-        }
-
-        log::info!("discover: reporting {name} ({address})");
-
-        let device_info = format!("Supvan {name} BT");
-        let device_uri = format!("btrfcomm://bt/{address}");
-        let device_id = format!("MFG:Supvan;MDL:{name} (BT);CMD:SUPVAN;");
-
-        if !cb(&device_info, &device_uri, &device_id) {
-            break;
-        }
-    }
-
-    log::info!("discover: done");
-    true
+        models::is_matching_bt_device(&address, &name).then_some((path, props, address, name))
+    })
 }
 
 /// One BT-attached Supvan candidate.
 ///
 /// `name` is the BlueZ device `Name` property — the same string the firmware
-/// reports as its self-id, so it cross-correlates with USB's `RD_DEV_NAME`.
+/// reports as its self-id, so it cross-correlates with USB's serial.
 pub struct BtCandidate {
     pub address: String,
     pub name: String,
 }
 
-/// Like [`discover`] but returns structured candidates instead of invoking a
-/// callback, for the unified cross-transport device list.
+/// Find Supvan printers over BlueZ: scan, pair any new ones that may speak
+/// SPP, and report the paired ones that do. Blocking — the scan alone takes
+/// [`SCAN_WINDOW`] — so async callers should run it under `spawn_blocking`.
 pub fn list_candidates() -> Vec<BtCandidate> {
-    let mut out = Vec::new();
-    discover(|info, uri, _id| {
-        // info is "Supvan <name> BT", uri is "btrfcomm://bt/<addr>"
-        let name = info
-            .strip_prefix("Supvan ")
-            .and_then(|s| s.strip_suffix(" BT"))
-            .unwrap_or(info)
-            .to_string();
-        if let Some(addr) = uri
-            .strip_prefix("btrfcomm://")
-            .and_then(|s| s.find('/').map(|i| &s[i + 1..]))
-        {
-            out.push(BtCandidate {
-                address: addr.to_string(),
-                name,
-            });
+    let conn = match Connection::new_system() {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("bt discover: D-Bus connection failed: {e}");
+            return Vec::new();
         }
-        true
-    });
-    out
+    };
+    let proxy = conn.with_proxy(BLUEZ_SERVICE, "/", Duration::from_secs(5));
+    let managed_objects = || {
+        proxy
+            .get_managed_objects()
+            .inspect_err(|e| log::error!("bt discover: GetManagedObjects failed: {e}"))
+            .ok()
+    };
+
+    let Some(objects) = managed_objects() else {
+        return Vec::new();
+    };
+    let Some(adapter) = find_adapter(&objects) else {
+        return Vec::new();
+    };
+    run_discovery(&conn, &adapter);
+
+    let Some(mut objects) = managed_objects() else {
+        return Vec::new();
+    };
+    let mut paired_any = false;
+    for (path, props, address, name) in supvan_devices(&objects) {
+        if get_bool_prop(props, "Paired").unwrap_or(false) {
+            continue;
+        }
+        if !may_speak_spp(props) {
+            log::debug!("bt discover: {name} ({address}) — advertises no SPP, not pairing");
+            continue;
+        }
+        log::info!("bt discover: found unpaired match: {name} ({address})");
+        auto_pair_device(&conn, path, &address);
+        paired_any = true;
+    }
+    if paired_any {
+        let Some(after) = managed_objects() else {
+            return Vec::new();
+        };
+        objects = after;
+    }
+
+    supvan_devices(&objects)
+        .filter(|(_, props, address, name)| {
+            let spp = has_spp_uuid(props);
+            if !spp {
+                log::debug!("bt discover: {name} ({address}) — no SPP UUID, skipping");
+            }
+            spp
+        })
+        .map(|(_, _, address, name)| {
+            log::info!("bt discover: reporting {name} ({address})");
+            BtCandidate { address, name }
+        })
+        .collect()
 }

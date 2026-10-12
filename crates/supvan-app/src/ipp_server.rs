@@ -84,11 +84,10 @@ fn slug(name: &str) -> String {
 #[async_trait::async_trait]
 impl DeviceBackend for SupvanDeviceBackend {
     async fn list(&self) -> Vec<DiscoveredDevice> {
-        if supvan_discover::util::is_mock_mode() {
+        if supvan_discover::is_mock_mode() {
             let family = models::default_family();
-            let driver = family.driver_name.to_string_lossy();
-            let mdl = String::from_utf8_lossy(&family.make_and_model).into_owned();
-            let device_id = format!("MFG:Supvan;MDL:{mdl};CMD:KASCRIPT;");
+            let driver = &family.driver_name;
+            let device_id = format!("MFG:Supvan;MDL:{};CMD:KASCRIPT;", family.make_and_model);
             log::info!("mock discovery: emitted mock://t50-001 (driver={driver})");
             return vec![DiscoveredDevice {
                 info: "Supvan Mock".to_string(),
@@ -97,19 +96,10 @@ impl DeviceBackend for SupvanDeviceBackend {
             }];
         }
 
-        // Collect all candidates. USB probes RD_DEV_NAME silently per device;
-        // BT pulls the firmware-reported name from BlueZ; BLE scans for
-        // E11/E12-class advertisers (no-op without the `ble` feature).
-        // BT discovery is blocking D-Bus plus a multi-second scan window.
-        let (usb, bt, ble) = tokio::join!(
-            supvan_discover::usb::list_candidates(),
-            tokio::task::spawn_blocking(supvan_discover::bt::list_candidates),
-            supvan_discover::ble::list_candidates(),
-        );
-        let bt = bt.unwrap_or_else(|e| {
-            log::warn!("discover: BT scan task failed: {e}");
-            Vec::new()
-        });
+        // USB reads the printer's serial over RETURN_MAT; BT and BLE take the
+        // advertised name, which is the same serial. BLE is a no-op without
+        // the `ble` feature.
+        let supvan_discover::Candidates { usb, bt, ble } = supvan_discover::scan_all().await;
 
         // Group by printer-reported name. USB candidates carry their
         // `device_sn` (parsed from `RETURN_MAT` at offset 40); BT and BLE carry
@@ -127,7 +117,7 @@ impl DeviceBackend for SupvanDeviceBackend {
         );
         let mut by_name: BTreeMap<String, Group> = BTreeMap::new();
         for u in usb {
-            let key = u.printer_name.clone().unwrap_or_else(|| u.uri_id.clone());
+            let key = u.printer_name.clone().unwrap_or_else(|| u.port_key.clone());
             by_name.entry(key).or_default().0 = Some(u);
         }
         for b in bt {
@@ -296,15 +286,10 @@ impl DeviceBackend for SupvanDeviceBackend {
             && let Some(mdl) = models::parse_mdl(device_id)
         {
             let family = models::family_for_model_hint(mdl);
-            return Some(family.driver_name.to_string_lossy().into_owned());
+            return Some(family.driver_name.clone());
         }
         if crate::device::is_ours(device_uri) {
-            return Some(
-                models::default_family()
-                    .driver_name
-                    .to_string_lossy()
-                    .into_owned(),
-            );
+            return Some(models::default_family().driver_name.clone());
         }
         None
     }

@@ -92,18 +92,26 @@ pub struct RfidMaterial {
     pub heat_index: u8,
 }
 
+/// The vendor's catalogue code for "not a catalogue item".
+pub const NON_CATALOGUE_CODE: u16 = 30000;
+/// Labels remaining the vendor reports on a synthetic roll.
+pub const DEFAULT_ROLL_COUNT: u32 = 480;
+/// Label geometry the vendor defaults a synthetic roll to, mm.
+pub const DEFAULT_WIDTH_MM: u8 = 40;
+pub const DEFAULT_LENGTH_MM: u8 = 30;
+
 impl Default for RfidMaterial {
     fn default() -> Self {
         let (heat_time_5, heat_time_40) = heat_presets::STANDARD;
         Self {
-            code: 30000,
+            code: NON_CATALOGUE_CODE,
             mat_type: PaperType::DieCut as u8,
-            width_mm: 40,
-            length_mm: 30,
-            gap_mm: 3,
+            width_mm: DEFAULT_WIDTH_MM,
+            length_mm: DEFAULT_LENGTH_MM,
+            gap_mm: crate::status::DEFAULT_LABEL_GAP_MM,
             tail_mm: 0,
             custom_id: 1,
-            remaining: 480,
+            remaining: DEFAULT_ROLL_COUNT,
             heat_time_5,
             heat_time_40,
             opt_threshold: (0, 0),

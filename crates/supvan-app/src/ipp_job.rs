@@ -300,25 +300,19 @@ pub fn config_from_family(
 ) -> Option<ipp_printer_app::PrinterConfig> {
     let family = models::families()
         .iter()
-        .find(|f| f.driver_name.to_string_lossy() == driver)?;
-    let make = String::from_utf8_lossy(&family.make_and_model).into_owned();
-    let media_names: Vec<String> = family
-        .media_names
-        .iter()
-        .map(|n| n.to_string_lossy().into_owned())
-        .collect();
+        .find(|f| f.driver_name == driver)?;
     Some(ipp_printer_app::PrinterConfig {
         name: name.to_string(),
         // Human-readable label the backend built ("Supvan T50 Series <serial>")
         // — surfaced as the DNS-SD instance name, printer-info, and web UI.
         display_name: info.to_string(),
         driver_name: driver.to_string(),
-        make_and_model: make,
+        make_and_model: family.make_and_model.clone(),
         device_id: device_id.to_string(),
         device_uri: uri.to_string(),
         dpi: family.dpi,
         printhead_width_dots: family.printhead_width_dots,
-        media_names,
+        media_names: family.media_names.clone(),
         media_sizes: family.media_sizes.clone(),
         // Custom-size bounds, so a print dialog can offer sizes the family
         // table doesn't enumerate. The ceiling is the material record's own

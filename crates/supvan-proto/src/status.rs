@@ -75,7 +75,7 @@ impl PrinterStatus {
     }
 
     /// Every named flag with its short log name, in display order.
-    pub fn flags(&self) -> [(&'static str, bool); 12] {
+    pub fn flags(&self) -> [(&'static str, bool); 13] {
         [
             ("printing", self.printing),
             ("busy", self.device_busy),
@@ -89,6 +89,7 @@ impl PrinterStatus {
             ("ribbon_rw_err", self.ribbon_rw_error),
             ("head_hot", self.head_temp_high),
             ("low_batt", self.low_battery),
+            ("usb", self.insert_usb),
         ]
     }
 

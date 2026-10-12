@@ -4,7 +4,6 @@
 //! accessing any other function in this module.
 
 use std::collections::HashMap;
-use std::ffi::{CString, c_int};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -15,12 +14,14 @@ use serde::Deserialize;
 
 /// A driver family groups models sharing the same printhead and DPI.
 pub struct DriverFamily {
-    pub driver_name: CString,
-    pub make_and_model: Vec<u8>,
-    pub dpi: c_int,
+    pub driver_name: String,
+    pub make_and_model: String,
+    pub dpi: i32,
     pub printhead_width_dots: u32,
-    pub media_names: Vec<CString>,
-    pub media_sizes: Vec<[c_int; 2]>,
+    /// PWG self-describing media names, parallel to `media_sizes`.
+    pub media_names: Vec<String>,
+    /// Media sizes in hundredths of a millimetre.
+    pub media_sizes: Vec<[i32; 2]>,
 }
 
 /// A USB model identified by PID (VID is always 0x1820).
@@ -94,15 +95,15 @@ fn registry() -> &'static Registry {
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Load the model registry from TOML. Panics if the file is not found or
-/// invalid.
-///
-/// Must be called exactly once, before any other function in this module.
 /// The default model table, baked into the binary so a `cargo install`'d
 /// (or otherwise relocated) binary is self-contained. Overridden by
 /// `$SUPVAN_MODELS` or a `models.toml` found on disk — see [`find_toml_path`].
 const EMBEDDED_MODELS: &str = include_str!("../../../data/models.toml");
 
+/// Load the model registry: an on-disk table if one is found and valid, else
+/// the embedded one.
+///
+/// Must be called exactly once, before any other function in this module.
 pub fn load() {
     let registry = match find_toml_path() {
         Some(path) => match read_and_build(&path) {
@@ -141,20 +142,19 @@ fn build_registry(contents: &str, source: &str) -> Result<Registry, String> {
         .families
         .iter()
         .map(|f| {
-            let media_names: Vec<CString> = f
+            let media_names = f
                 .media_mm
                 .iter()
                 // PWG 5101.1 self-describing name: metric dimensions take the
                 // `om_` (other-metric) class prefix; `oe_` is for inches and
                 // fails the IPP Everywhere media-name regex.
-                .map(|[w, h]| CString::new(format!("om_{w}x{h}mm_{w}x{h}mm")).unwrap())
+                .map(|[w, h]| format!("om_{w}x{h}mm_{w}x{h}mm"))
                 .collect();
-            let media_sizes: Vec<[c_int; 2]> =
-                f.media_mm.iter().map(|[w, h]| [w * 100, h * 100]).collect();
+            let media_sizes = f.media_mm.iter().map(|[w, h]| [w * 100, h * 100]).collect();
 
             DriverFamily {
-                driver_name: CString::new(f.name.as_str()).unwrap(),
-                make_and_model: f.description.as_bytes().to_vec(),
+                driver_name: f.name.clone(),
+                make_and_model: f.description.clone(),
                 dpi: f.dpi,
                 printhead_width_dots: f.printhead_dots,
                 media_names,
@@ -167,7 +167,7 @@ fn build_registry(contents: &str, source: &str) -> Result<Registry, String> {
     let family_index: HashMap<&str, usize> = families
         .iter()
         .enumerate()
-        .map(|(i, f)| (f.driver_name.to_str().unwrap(), i))
+        .map(|(i, f)| (f.driver_name.as_str(), i))
         .collect();
 
     let default_family_idx = *family_index
@@ -385,9 +385,9 @@ mod tests {
         init();
         // driver_for_device feeds the IEEE 1284 MDL through the same table.
         let f = family_for_model_hint("T80M Pro");
-        assert_eq!(f.driver_name.to_str().unwrap(), "supvan_t80");
+        assert_eq!(f.driver_name, "supvan_t80");
         let f = family_for_model_hint("E11");
-        assert_eq!(f.driver_name.to_str().unwrap(), "supvan_t50");
+        assert_eq!(f.driver_name, "supvan_t50");
     }
 
     #[test]
@@ -404,7 +404,7 @@ mod tests {
         ));
         // and it lands on the default family rather than being dropped.
         let f = family_for_model_hint("T0999X2501010001");
-        assert_eq!(f.driver_name.to_str().unwrap(), "supvan_t50");
+        assert_eq!(f.driver_name, "supvan_t50");
     }
 
     #[test]
