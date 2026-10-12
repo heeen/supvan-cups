@@ -32,21 +32,39 @@ impl HidrawDevice {
         self.fd
     }
 
-    /// Write a HID output report. Data is padded with zeros to 64 bytes.
+    /// Write a 64-byte HID output report, zero-padding short data.
+    ///
+    /// The device uses no report IDs, but hidraw still expects one as the
+    /// first byte — and usbhid strips a leading `0x00` as that ID
+    /// (`usbhid_output_report`). Without the explicit `0x00` prefix, any
+    /// report whose payload happened to start with a zero byte (common in
+    /// LZMA data) went out one byte short and corrupted the stream.
     pub fn write_report(&self, data: &[u8]) -> Result<()> {
-        let mut report = [0u8; HID_REPORT_SIZE];
+        let mut report = [0u8; 1 + HID_REPORT_SIZE];
         let copy_len = data.len().min(HID_REPORT_SIZE);
-        report[..copy_len].copy_from_slice(&data[..copy_len]);
-
+        report[1..=copy_len].copy_from_slice(&data[..copy_len]);
         let n = unsafe {
             libc::write(
                 self.fd,
                 report.as_ptr() as *const libc::c_void,
-                HID_REPORT_SIZE,
+                report.len(),
             )
         };
         if n < 0 {
             return Err(Error::Io(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    /// Discard input reports already queued — stale replies would otherwise
+    /// be read as the answer to the next command (the Android app's `clear()`
+    /// before every write does the same over SPP).
+    pub fn drain(&self) -> Result<()> {
+        while let Some(stale) = self.read_report(Duration::ZERO)? {
+            log::debug!(
+                "USB drained stale report: {:02x?}",
+                &stale[..stale.len().min(8)]
+            );
         }
         Ok(())
     }
