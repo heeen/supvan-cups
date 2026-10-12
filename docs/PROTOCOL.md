@@ -498,25 +498,84 @@ the printer itself signals stale firmware, a natural trigger for a future
 updater. The exact byte offset in our BT/USB status frames is unverified, so
 `status.rs` does not decode it yet.
 
-### Print pipeline glue
+### Print job flow (per transport)
 
-The above list is the per-command vocabulary. A real print job uses
-them in this order (BT, simplified):
+Supvan ships **one tool per transport** and the two disagree on several
+job-level details. Mirror the tool that actually drives the transport —
+`transport::Flow` (`Android` for SPP/BLE, `Electron` for USB HID) carries the
+differences. Sources: `T50PlusPrint.{doPrint,transfer,multiCompression}`
+smali (Android) and `t5080PrintUtils.js` / `t5080imageEncodeUtils.js` /
+`BaseSupVanPrint.js` from the KatasymbolEditor 1.1.1 source map (Electron).
 
-1. `CHECK_DEVICE` to confirm liveness.
-2. `INQUIRY_STA` to verify no error flags before committing.
-3. `START_PRINT` with the speed/darkness param.
-4. For each compressed-raster block:
-   - `NEXT_ZIPPEDBULK` (start-trans framing carrying `block_size`,
-     `block_count`).
-   - `BUF_FULL` (start-trans framing carrying `compressed_len`,
-     `speed`) → upload raw bytes with the BT transport's
-     `send_bulk_data` per-packet ack loop.
-5. Poll `INQUIRY_STA.printing` until it clears.
-6. `STOP_PRINT`.
+Shared skeleton:
 
-The KsJob raster pipeline in `supvan-app/src/job.rs::transfer_page`
-implements exactly this sequence.
+1. `CHECK_DEVICE`, then poll `INQUIRY_STA` until `deviceBusy` clears.
+2. `START_PRINT`, then poll until `printingStation` is set.
+3. Per block: poll `INQUIRY_STA` until `BufSta` (MSTA bit 0) is **0**, then
+   `NEXT_ZIPPEDBULK` → data → `BUF_FULL(len, speed)`. No feed-time waits —
+   both tools send the next block as soon as the firmware has room.
+4. Poll until `printingStation` clears. Neither tool sends `STOP_PRINT` on a
+   normal finish.
+
+| | Android (SPP / BLE) | Electron (USB HID) |
+|---|---|---|
+| `START_PRINT` param | 0 | 1 |
+| `NEXT_ZIPPEDBULK` params | (512, packet count) | compressed length |
+| data framing | 506-byte `AA BB` packets (500 B payload) in 512-byte `7E 5A FC 01 10 02` frames, written 4 × 128 B with 10 ms gaps; each packet acked | raw bytes in 64-byte reports, zero-padded, no header; **one** reply after the last report |
+| gap before `BUF_FULL` | 20 ms | bulk reply + 150 ms (two timers) |
+| gap after `BUF_FULL` reply | none | 100 ms |
+| `BufSta` poll | every 20 ms | every 5 ms, ~200 tries |
+| block packing | ≤ 4 buffers per block, shrink until ≤ 4096 B | whole page in one block if the buffers, compressed singly, sum ≤ 4000 B; otherwise **one buffer per block** |
+| speed (`BUF_FULL` param 2) | running minimum of `calc_speed(block_len / buffers)`; app overrides: 15 inverse labels, 5 photos, 20 rotated barcodes. We apply the page minimum to every block (a mid-page speed change leaves a seam) and cap it by link throughput (below) | 60 single-block page, 20 split page |
+
+**Bluetooth throughput is the printhead's limit.** Every 512-byte packet waits
+for its ack (~50 ms per packet including the 4 × 10 ms chunk gaps, plus ~180 ms
+of commands per block), so a dense halftone buffer — ~2.5 KB for 10.5 mm —
+takes ~0.43 s to deliver: ~24 mm/s. The speed value tracks feed rate in
+roughly mm/s, and `calc_speed` picks 25 for that density, so the head outruns
+the link and pauses mid-label, leaving stripes. The vendor app only avoids it
+because its editor forces speed 5 for photos. Two fixes, both verified on a
+dense full-bleed 80 mm Floyd–Steinberg ramp:
+
+- read each reply only until its `7E 5A` length field says it is complete,
+  instead of idling a fixed 50 ms for stragglers;
+- cap the page speed at the fastest vendor speed the link can feed for each
+  block (`compress::spp_link_speed`, 15 % headroom) — that page now runs at 20.
+
+`T80ProPrint` skips the 10 ms chunk gaps whenever a forced speed is set, so
+the firmware tolerates gap-free packets; dropping them is the next lever if
+dense pages ever need to go faster.
+
+`compress::Packing` implements both packing rules; `Printer::print_buffers`
+picks the one for the connected transport.
+
+### LZMA stream format
+
+LZMA1 "alone": 13-byte header (`5D`, dict 8192 LE, **exact** uncompressed
+size as u64 LE), then the payload with **no end-of-payload marker**. Each
+block decompresses to `n × 4096` bytes of print buffers.
+
+The missing marker is load-bearing. Android's SDK encoder runs with
+`EndMarker = false`; Supvan patched their lzma-js copy to force
+`_writeEndMark = false`. liblzma's `.lzma` encoder always writes one, and
+with it the firmware loses the tail of every block: the last buffer of a
+block went missing, and a page split over several blocks stopped at the first
+block boundary (42 mm on an 80 mm label with 4-buffer blocks, a few mm with
+1-buffer blocks) while single-block pages printed fine. `compress_lzma` uses
+liblzma's raw `LZMA_FILTER_LZMA1EXT` encoder, which omits the marker, and
+writes the header itself. Dictionary size in the header is irrelevant to the
+firmware (Electron's mode-9 streams declare 32 MiB).
+
+### USB HID: hidraw needs an explicit report ID
+
+The device uses no numbered reports, yet a hidraw write must still start with
+the report-ID byte: `usbhid_output_report` strips a leading `0x00` as the ID
+and sends the rest. Writing the bare 64 bytes therefore sent any report whose
+payload began with `0x00` one byte short, corrupting the compressed stream at
+random. `HidrawDevice::write_report` always prefixes `0x00` and writes 65
+bytes. Stale input reports are drained before every command so a late reply
+can never be read as the answer to the next one (Android's `clear()` does the
+same over SPP).
 
 ## PrinterStatus bit layout
 
@@ -606,7 +665,6 @@ remaining-label counter (probably also somewhere in 30..50). The
 | BT `device_sn` BCD vs USB ASCII | `status::parse_material` | The two transports report the same physical value but in different encodings; downstream code can't naïvely string-compare. |
 | Genuine-tag signature | `supvan-app::record_is_ours` | We assume a real consumable carries a non-zero `MaterialInfo::code` and records we write never do. Unconfirmed — needs a genuine tag's pages 4+, which are password-protected. The one place a wrong guess could overwrite a real roll. |
 | Consumable tag password | `generalPassword`, commented out upstream | The `SHA-256(UID ‖ Pwkey)` derivation is plausible but never exercised by the vendor's own host code, so unverified. Blocks reading a genuine tag's record. |
-| `BUF_FULL` (0x10) handling | request side is implemented; what the device sends back when its buffer fills mid-print isn't fully decoded. | KsJob's per-packet ack loop handles the timing but doesn't surface a typed status. |
 
 ## Appendix: BLE GATT transport (implemented behind the `ble` feature, unverified)
 
@@ -665,5 +723,5 @@ correctly from the **T50 print flow** at all — the vendor runs `printingProces
   the place where per-transport quirks land.
 - `crates/supvan-proto/src/printer.rs` — high-level Printer interface;
   one method per command code, returning the parsed shape.
-- `crates/supvan-app/src/job.rs::transfer_page` — the real-world
+- `crates/supvan-proto/src/printer.rs::print_compressed` — the real-world
   ordering of these commands for a one-page label print.
