@@ -17,7 +17,7 @@ Sources of ground truth:
   `{MSTA,FSTA,PAGE}_REG_BITS.java` (status/page bits). Where a field comment
   says "from Electron app" or "byteToString(A,11,21)" it's a direct port of
   that source.
-- `supvan-proto/src/{cmd,status,bt_transport,usb_transport}.rs` — the
+- `supvan-proto/src/{cmd,status,spp_pipe,rfcomm,usb_transport}.rs` — the
   Rust implementation. Always more authoritative than this document.
 - Live captures from the working katasymbol deployment (the BT side
   was self-validated by ipptool round-trips; the USB side was decoded
@@ -37,9 +37,9 @@ Sources of ground truth:
 
 Because the USB response is fixed-size for everything except
 `RETURN_MAT`, several BT-only data items (firmware version, device name,
-extended version) are stubbed to `None` on the USB transport in
-`usb_transport.rs::parse_*_response`. That isn't a bug; the firmware
-genuinely can't encode them in 8 bytes.
+extended version) default to `None` on the `Transport` trait and only the
+SPP codec parses them. That isn't a bug; the firmware genuinely can't encode
+them in 8 bytes.
 
 ## BT frame format
 
@@ -103,9 +103,10 @@ Validation happens in `status::validate_response(data, expected_cmd)`.
 [9]  param2_lo
 ```
 
-Built by `usb_transport::UsbHidTransport::make_usb_cmd(cmd, param)` and
-`make_usb_cmd_two(cmd, param1, param2)`. The HID write transparently
-right-pads to 64 bytes (`HID_REPORT_SIZE`).
+Built by `usb_transport::make_usb_cmd(cmd, param)` and
+`make_usb_cmd_two(cmd, param1, param2)`. The HID write right-pads to 64
+bytes and prefixes report ID `0x00` (see "hidraw needs an explicit report
+ID" below).
 
 ### Status response frame (8 bytes)
 
@@ -123,7 +124,7 @@ This is the only USB response size for everything *except*
 [7]  reserved
 ```
 
-Parsed by `usb_transport::UsbHidTransport::parse_usb_status(resp)`.
+Parsed by `status::decode_status_regs(&resp[1..])`.
 The bit assignments are the **same** as BT (see PrinterStatus table
 below); the frame just packs them at different offsets.
 
@@ -146,7 +147,7 @@ declares a second, larger feature/output report just for material data.
             the same string the firmware broadcasts as the BlueZ Name.
 ```
 
-Parsed by `usb_transport::UsbHidTransport::parse_usb_material(resp)`.
+Parsed by `UsbHidTransport::parse_material_response`.
 
 The note from the original Electron app — `byteToString(A,11,21)` —
 hinted at a device serial at offsets 11..21 (10 bytes BCD); we don't
@@ -164,14 +165,14 @@ output-only (no parsed response).
 | Code | Name                | Direction       | BT response shape         | USB response shape           | Parser                             |
 |------|---------------------|-----------------|---------------------------|------------------------------|------------------------------------|
 | 0x10 | BUF_FULL            | host → device   | *control / flow only*     | *control / flow only*        | —                                  |
-| 0x11 | INQUIRY_STA         | host ↔ device   | 20-byte status frame      | 8-byte status frame          | `parse_status` / `parse_usb_status` |
+| 0x11 | INQUIRY_STA         | host ↔ device   | 20-byte status frame      | 8-byte status frame          | `parse_status` / `decode_status_regs` |
 | 0x12 | CHECK_DEVICE        | host ↔ device   | 8-byte ack (non-empty)    | 8-byte ack (non-empty)       | `validate_response`                |
 | 0x13 | START_PRINT         | host → device   | 8-byte ack                | 8-byte ack                   | —                                  |
 | 0x14 | STOP_PRINT          | host → device   | 8-byte ack                | 8-byte ack                   | —                                  |
 | 0x16 | RD_DEV_NAME         | host ↔ device   | ≥22-byte frame + ASCII    | **stub** (8-byte; no string) | `parse_device_name`; USB returns None |
 | 0x17 | READ_REV            | host ↔ device   | ≥25-byte frame + ASCII    | **stub** (8-byte)            | `parse_version`                    |
 | 0x2E | PAPER_SKIP          | host → device   | 8-byte ack                | 8-byte ack                   | —                                  |
-| 0x30 | RETURN_MAT          | host ↔ device   | ≥57-byte material frame   | **64-byte** material frame   | `parse_material` / `parse_usb_material` |
+| 0x30 | RETURN_MAT          | host ↔ device   | ≥57-byte material frame   | **64-byte** material frame   | `parse_material` / USB `parse_material_response` |
 | 0x5C | NEXT_ZIPPEDBULK     | host → device   | uses `make_cmd_start_trans`; signals next block of zipped raster | same | — |
 | 0x5D | SET_RFID_DATA       | host → device   | 8-byte ack, then bulk payload | 8-byte ack, then bulk payload | `rfid::RfidMaterial::encode`; see below |
 | 0xC5 | READ_FWVER          | host ↔ device   | ≥23-byte frame; firmware byte at [22] | **stub** (8-byte)  | `parse_firmware_version`           |
@@ -529,18 +530,26 @@ Shared skeleton:
 | speed (`BUF_FULL` param 2) | running minimum of `calc_speed(block_len / buffers)`; app overrides: 15 inverse labels, 5 photos, 20 rotated barcodes. We apply the page minimum to every block (a mid-page speed change leaves a seam) and cap it by link throughput (below) | 60 single-block page, 20 split page |
 
 **Bluetooth throughput is the printhead's limit.** Every 512-byte packet waits
-for its ack (~50 ms per packet including the 4 × 10 ms chunk gaps, plus ~180 ms
-of commands per block), so a dense halftone buffer — ~2.5 KB for 10.5 mm —
-takes ~0.43 s to deliver: ~24 mm/s. The speed value tracks feed rate in
-roughly mm/s, and `calc_speed` picks 25 for that density, so the head outruns
-the link and pauses mid-label, leaving stripes. The vendor app only avoids it
-because its editor forces speed 5 for photos. Two fixes, both verified on a
-dense full-bleed 80 mm Floyd–Steinberg ramp:
+for its ack, so a dense halftone buffer — ~2.5 KB for 10.5 mm — takes
+0.4–0.8 s to deliver: the per-packet ack latency swings between ~20 and ~90 ms
+with the radio link, job to job, for identical traffic. The speed value tracks
+feed rate in roughly mm/s, and `calc_speed` picks 25 for that density, so the
+head outruns the link and pauses mid-label, leaving stripes. The vendor app
+only avoids it because its editor forces speed 5 for photos. Two fixes, both
+verified on a dense full-bleed 80 mm Floyd–Steinberg ramp:
 
 - read each reply only until its `7E 5A` length field says it is complete,
   instead of idling a fixed 50 ms for stragglers;
-- cap the page speed at the fastest vendor speed the link can feed for each
-  block (`compress::spp_link_speed`, 15 % headroom) — that page now runs at 20.
+- measure the link instead of assuming it. The speed rides on BUF_FULL, which
+  follows the data, so `Printer` times the first block's NEXT_ZIPPEDBULK
+  round trip and per-byte transfer before committing, and caps the page at
+  the fastest vendor speed that lands each block while the head prints the
+  previous one (15 % headroom). Measured: Bluetooth in its slow state → 10;
+  USB keeps 20. Any transport, no per-link constants.
+
+Do **not** wait for the last data packet's ack over SPP, although the Android
+app does: the firmware sends it only once it has digested the whole block,
+~0.4 s on a dense one, which halves throughput.
 
 `T80ProPrint` skips the 10 ms chunk gaps whenever a forced speed is set, so
 the firmware tolerates gap-free packets; dropping them is the next lever if
@@ -643,16 +652,9 @@ works cleanly without leaning on BlueZ properties.
 
 ### Remaining labels
 
-Both transports physically carry this — the firmware updates it every
-print — but only the BT parser extracts it today. The USB parser
-returns `Some(None)` for `remaining`. From the comment at offset 31..32
-("SN" counter), it's plausible the USB-side counter at that offset is
-the same value, but the field is currently used for the label SN, not
-the remaining count.
-
-**TODO**: figure out where the USB 64-byte report carries the
-remaining-label counter (probably also somewhere in 30..50). The
-`remaining=None` we observe live confirms it's not at the BT offsets.
+Both transports carry the remaining-label count at payload offset 21..25
+(LE u32), and both parsers read it — verified on a T50M Pro, which reports
+the same count over USB and Bluetooth.
 
 ## Known gaps and open questions
 
@@ -661,7 +663,6 @@ remaining-label counter (probably also somewhere in 30..50). The
 | `RD_DEV_NAME` over USB | `usb_transport::parse_device_name_response` | Can't get the printer name from a status query; have to issue `RETURN_MAT` instead. |
 | `READ_REV` over USB | `parse_version_response` stub | We can't read the protocol version string over USB. Probably fine; same firmware on both ends. |
 | `READ_FWVER` over USB | `parse_firmware_version_response` stub | No way to read firmware version over USB without bigger HID report. |
-| `MaterialInfo.remaining` over USB | parse_usb_material returns None | Label-counter UX broken for USB-only setups. |
 | BT `device_sn` BCD vs USB ASCII | `status::parse_material` | The two transports report the same physical value but in different encodings; downstream code can't naïvely string-compare. |
 | Genuine-tag signature | `supvan-app::record_is_ours` | We assume a real consumable carries a non-zero `MaterialInfo::code` and records we write never do. Unconfirmed — needs a genuine tag's pages 4+, which are password-protected. The one place a wrong guess could overwrite a real roll. |
 | Consumable tag password | `generalPassword`, commented out upstream | The `SHA-256(UID ‖ Pwkey)` derivation is plausible but never exercised by the vendor's own host code, so unverified. Blocks reading a genuine tag's record. |
