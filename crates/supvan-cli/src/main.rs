@@ -18,6 +18,7 @@ use supvan_proto::bitmap::{
 use supvan_proto::buffer::{Density, PageOptions};
 use supvan_proto::cmd;
 use supvan_proto::dither::DitherMode;
+use supvan_proto::page;
 use supvan_proto::printer::Printer;
 use supvan_proto::rfid::{RfidMaterial, heat_presets};
 use supvan_proto::status::{DEFAULT_LABEL_GAP_MM, DEFAULT_LABEL_HEIGHT_MM, MaterialInfo};
@@ -345,15 +346,12 @@ async fn cmd_test_print(target: &str, density: Density, save_paper: bool) -> Cli
         "Printing test pattern on {}mm x {}mm label...",
         mat.width_mm, mat.height_mm
     );
+    let page = PageOptions {
+        save_paper,
+        ..Default::default()
+    };
     printer
-        .test_print(
-            &mat,
-            density,
-            PageOptions {
-                save_paper,
-                ..Default::default()
-            },
-        )
+        .print_buffers(&page::test_pattern(&mat, density, page))
         .await?;
     eprintln!("Done.");
     Ok(())
@@ -462,7 +460,7 @@ async fn cmd_gray_ramp(
 dither={dither:?}, density={density}."
     );
     printer
-        .print_grayscale(&gray, w, h, density, dither)
+        .print_buffers(&page::grayscale(&gray, w, h, density, dither)?)
         .await?;
     eprintln!("Done.");
     Ok(())
@@ -721,7 +719,9 @@ black={} red={}.",
             );
         }
     }
-    printer.print_two_colour(&rgb, w, h, density).await?;
+    printer
+        .print_buffers(&page::two_colour(&rgb, w, h, density)?)
+        .await?;
     eprintln!("Done.");
     Ok(())
 }
@@ -767,9 +767,8 @@ async fn cmd_heat_sweep(
                 .join(",")
         );
         provision(&printer, &mat).await?;
-        printer
-            .print_swatch_ladder(label.width as u32, label.length as u32, &densities)
-            .await?;
+        let strip = page::swatch_ladder(label.width as u32, label.length as u32, &densities)?;
+        printer.print_buffers(&strip).await?;
     }
 
     eprintln!("\nSweep complete: {} strips.", heats.len());

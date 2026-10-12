@@ -2,10 +2,10 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use ipp_printer_app::{JobFailure, JobOptions, PrinterHandle, PrinterReason, RasterDriver};
-use supvan_proto::bitmap::{center_in_printhead, raster_to_column_major};
-use supvan_proto::buffer::{Density, PageOptions, split_into_buffers};
+use supvan_proto::buffer::Density;
 use supvan_proto::dither::{DitherMode, Ditherer, to_gray_line};
 use supvan_proto::error::Error as ProtoError;
+use supvan_proto::page;
 use supvan_proto::status::PrinterStatus;
 
 use crate::dump::{JobDump, JobManifest, PgmAccumulator, dumps_enabled};
@@ -177,29 +177,21 @@ impl KsJob {
             self.bytes_per_line,
         );
 
-        let (col_data, num_cols, _) =
-            raster_to_column_major(&self.raster_data, self.width, self.height);
-        let (canvas, canvas_bpl) =
-            center_in_printhead(&col_data, num_cols, self.width, self.printhead_width_dots);
-        dump.printhead_pbm(&canvas, num_cols, canvas_bpl, self.printhead_width_dots);
-
-        // Zero margins: `split_into_buffers` treats them as leading/trailing
-        // columns *of the image*, which is right for the vendor's composed
-        // bitmap but not here — the IPP layer declares zero hard margins, so
-        // CUPS hands us exactly the printable area. Passing the default 8 made
-        // the tiler skip the first 8 columns and stop 8 short of the end,
-        // shifting the label 1mm and losing 2mm off the tail.
-        let buffers = split_into_buffers(
-            &canvas,
-            canvas_bpl as u8,
-            num_cols as u16,
-            0,
-            0,
-            // IPP carries one print-quality knob, so both trims move together —
-            // the vendor's own behaviour when its packed density fits in a byte.
-            Density::uniform(self.density),
-            PageOptions::default(),
+        let canvas = page::printhead_canvas(
+            &self.raster_data,
+            self.width,
+            self.height,
+            self.printhead_width_dots,
         );
+        dump.printhead_pbm(
+            &canvas.data,
+            u32::from(canvas.cols),
+            u32::from(canvas.bpl),
+            self.printhead_width_dots,
+        );
+        // IPP carries one print-quality knob, so both trims move together —
+        // the vendor's own behaviour when its packed density fits in a byte.
+        let buffers = page::full_bleed_buffers(&canvas, Density::uniform(self.density));
 
         let outcome: Result<(), JobFailure> = if let Some(ref printer) = dev.printer {
             dev.printing.store(true, Ordering::Release);
