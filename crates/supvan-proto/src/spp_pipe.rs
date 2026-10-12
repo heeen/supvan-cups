@@ -3,34 +3,38 @@
 //! An [`SppPipe`] carries already-framed Supvan frames (the 16-byte `0x7E5A`
 //! command frame and the 512-byte data frame) over a physical link and returns
 //! the device's raw response bytes. It owns only link mechanics — chunking,
-//! pacing, draining, response polling — and knows nothing about opcodes, frame
-//! layout, or response parsing.
+//! pacing, draining, response polling — and knows nothing about opcodes or
+//! response parsing; to tell when a reply is complete it may ask
+//! [`crate::cmd::frame_len`].
 //!
 //! [`SppCodec`] drives any `SppPipe` to implement the full [`Transport`]
-//! surface, so Classic-Bluetooth RFCOMM and (future) BLE GATT share one codec
-//! and differ only in their pipe.
+//! surface, so Classic-Bluetooth RFCOMM and BLE GATT share one codec and
+//! differ only in their pipe.
 
-use crate::cmd::{CMD_NEXT_ZIPPEDBULK, make_cmd, make_cmd_start_trans};
-use crate::data::build_data_frames;
+use crate::cmd::{CMD_NEXT_ZIPPEDBULK, CmdFrame, make_cmd, make_cmd_start_trans};
+use crate::data::{DATA_FRAME_LEN, DataFrame, build_data_frames};
 use crate::error::Result;
 use crate::status::{self, MaterialInfo, PrinterStatus};
 use crate::transport::{Flow, Transport};
 use async_trait::async_trait;
+use std::time::Duration;
 
-/// SPP block size advertised in the `NEXT_ZIPPEDBULK` header.
-const SPP_BLOCK_SIZE: u16 = 512;
+/// The vendor writes each frame as 128-byte pieces, 10 ms apart
+/// (`BasePrint.transferSplitData`), on every SPP link.
+pub(crate) const SPP_CHUNK: usize = 128;
+pub(crate) const SPP_CHUNK_DELAY: Duration = Duration::from_millis(10);
 
 /// Raw transport for pre-framed SPP frames.
 #[async_trait]
 pub trait SppPipe: Send + Sync {
     /// Send a 16-byte command frame; return the device's raw response.
-    async fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>>;
+    async fn send_cmd_frame(&self, frame: &CmdFrame) -> Result<Option<Vec<u8>>>;
 
     /// Send a 512-byte data frame. When `read_response` is set, read and return
     /// the device's response after the frame.
     async fn send_data_frame(
         &self,
-        frame: &[u8; 512],
+        frame: &DataFrame,
         read_response: bool,
     ) -> Result<Option<Vec<u8>>>;
 
@@ -76,8 +80,12 @@ impl<P: SppPipe> Transport for SppCodec<P> {
         _compressed_len: u16,
         num_packets: usize,
     ) -> Result<Option<Vec<u8>>> {
-        self.send_cmd_two(CMD_NEXT_ZIPPEDBULK, SPP_BLOCK_SIZE, num_packets as u16)
-            .await
+        self.send_cmd_two(
+            CMD_NEXT_ZIPPEDBULK,
+            DATA_FRAME_LEN as u16,
+            num_packets as u16,
+        )
+        .await
     }
 
     async fn send_bulk_data(
@@ -91,7 +99,7 @@ impl<P: SppPipe> Transport for SppCodec<P> {
         // next — otherwise leftover RX bytes confuse the next BUF_FULL read.
         // Links that don't ack at all (BLE) opt out via `acks_data_frames`.
         let acked = self.pipe.acks_data_frames();
-        let frames = build_data_frames(data);
+        let frames = build_data_frames(data)?;
         let mut last_resp = None;
         for (i, frame) in frames.iter().enumerate() {
             let is_last = i == frames.len() - 1;
@@ -142,13 +150,13 @@ mod tests {
 
     #[async_trait]
     impl SppPipe for RecordingPipe {
-        async fn send_cmd_frame(&self, _frame: &[u8; 16]) -> Result<Option<Vec<u8>>> {
+        async fn send_cmd_frame(&self, _frame: &CmdFrame) -> Result<Option<Vec<u8>>> {
             Ok(None)
         }
 
         async fn send_data_frame(
             &self,
-            _frame: &[u8; 512],
+            _frame: &DataFrame,
             read_response: bool,
         ) -> Result<Option<Vec<u8>>> {
             self.asked.lock().unwrap().push(read_response);

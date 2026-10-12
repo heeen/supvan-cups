@@ -30,107 +30,33 @@ impl UsbHidTransport {
         Self { dev }
     }
 
-    /// Build an 8-byte USB HID command frame (padded to 64 bytes by write_report).
-    ///
-    /// Layout:
-    ///   [0] 0xC0  [1] 0x40
-    ///   [2] param_hi  [3] param_lo   (big-endian)
-    ///   [4] cmd  [5] 0x00  [6] 0x08  [7] 0x00
-    fn make_usb_cmd(cmd: u8, param: u16) -> [u8; 8] {
-        [
-            USB_MAGIC1,
-            USB_MAGIC2,
-            (param >> 8) as u8,   // big-endian high
-            (param & 0xFF) as u8, // big-endian low
-            cmd,
-            0x00,
-            0x08,
-            0x00,
-        ]
-    }
-
-    /// Build a 10-byte USB HID extended command (for two-parameter commands).
-    ///
-    /// Layout:
-    ///   [0..7] same as make_usb_cmd
-    ///   [8] param2_hi  [9] param2_lo   (big-endian)
-    fn make_usb_cmd_two(cmd: u8, param1: u16, param2: u16) -> [u8; 10] {
-        [
-            USB_MAGIC1,
-            USB_MAGIC2,
-            (param1 >> 8) as u8,
-            (param1 & 0xFF) as u8,
-            cmd,
-            0x00,
-            0x08,
-            0x00,
-            (param2 >> 8) as u8,
-            (param2 & 0xFF) as u8,
-        ]
-    }
-
     /// Send a HID report and read the response.
     fn send_and_recv(&self, data: &[u8]) -> Result<Option<Vec<u8>>> {
         log::debug!("USB TX: {:02x?}", &data[..data.len().min(16)]);
         self.dev.drain()?;
         self.dev.write_report(data)?;
         let resp = self.dev.read_report(USB_RESPONSE_TIMEOUT)?;
-        if let Some(ref r) = resp {
-            log::debug!("USB RX: {:02x?}", r);
-        } else {
-            log::debug!("USB RX: (no response)");
+        match &resp {
+            Some(r) => log::debug!("USB RX: {r:02x?}"),
+            None => log::debug!("USB RX: (no response)"),
         }
         Ok(resp)
     }
+}
 
-    /// Parse material info from a USB HID RETURN_MAT response.
-    ///
-    /// The 64-byte report is just a 1-byte length prefix followed by the
-    /// same material payload the BT transport carries (verified by
-    /// `crates/supvan-cli/examples/material_probe`). USB additionally
-    /// tacks 16 bytes of null-terminated ASCII device serial onto the
-    /// end at offset 40 — BT doesn't include this.
-    fn parse_usb_material(resp: &[u8]) -> Option<MaterialInfo> {
-        if resp.len() < 22 {
-            log::debug!("USB material response too short: {} bytes", resp.len());
-            return None;
-        }
-        // ASCII device serial at USB_DEVICE_SN_OFFSET (USB-only addition).
-        let dev_sn = if resp.len() > USB_DEVICE_SN_OFFSET {
-            let tail = &resp[USB_DEVICE_SN_OFFSET..];
-            let end = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
-            let s = String::from_utf8_lossy(&tail[..end]).to_string();
-            if s.is_empty() { None } else { Some(s) }
-        } else {
-            None
-        };
-        crate::status::parse_material_payload(&resp[1..], dev_sn)
-    }
+/// An 8-byte USB command: `C0 40`, the parameter **big-endian** (BT is LE),
+/// the command byte, then `00 08 00` — constant in every vendor frame.
+fn make_usb_cmd(cmd: u8, param: u16) -> [u8; 8] {
+    let [hi, lo] = param.to_be_bytes();
+    [USB_MAGIC1, USB_MAGIC2, hi, lo, cmd, 0x00, 0x08, 0x00]
+}
 
-    /// Parse the 6 status bytes from an 8-byte USB HID response.
-    ///
-    /// USB response layout:
-    ///   [0] echo byte (command or status indicator)
-    ///   [1] MSTA low   (same bits as BT byte 14)
-    ///   [2] MSTA high  (same bits as BT byte 15)
-    ///   [3] FSTA low   (same bits as BT byte 16)
-    ///   [4] FSTA high  (same bits as BT byte 17)
-    ///   [5] print count low
-    ///   [6] print count high
-    ///   [7] reserved
-    fn parse_usb_status(resp: &[u8]) -> Option<PrinterStatus> {
-        if resp.len() < 7 {
-            return None;
-        }
-
-        Some(crate::status::decode_status_bits(
-            resp[1], // MSTA low
-            resp[2], // MSTA high
-            resp[3], // FSTA low
-            resp[4], // FSTA high
-            u16::from_le_bytes([resp[5], resp[6]]),
-        ))
-    }
+/// A two-parameter command: the 8-byte form plus the second parameter, BE.
+fn make_usb_cmd_two(cmd: u8, param1: u16, param2: u16) -> [u8; 10] {
+    let mut frame = [0u8; 10];
+    frame[..8].copy_from_slice(&make_usb_cmd(cmd, param1));
+    frame[8..].copy_from_slice(&param2.to_be_bytes());
+    frame
 }
 
 #[async_trait::async_trait]
@@ -140,12 +66,12 @@ impl Transport for UsbHidTransport {
     }
 
     async fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>> {
-        let frame = Self::make_usb_cmd(cmd, param);
+        let frame = make_usb_cmd(cmd, param);
         tokio::task::block_in_place(|| self.send_and_recv(&frame))
     }
 
     async fn send_cmd_two(&self, cmd: u8, param1: u16, param2: u16) -> Result<Option<Vec<u8>>> {
-        let frame = Self::make_usb_cmd_two(cmd, param1, param2);
+        let frame = make_usb_cmd_two(cmd, param1, param2);
         tokio::task::block_in_place(|| self.send_and_recv(&frame))
     }
 
@@ -158,16 +84,15 @@ impl Transport for UsbHidTransport {
             // Raw compressed bytes in 64-byte reports, no per-report header
             // (Electron `BulkWriteType`). The device answers once, after the
             // byte count announced in NEXT_ZIPPEDBULK has arrived.
-            let mut chunks = data.chunks(HID_REPORT_SIZE).peekable();
             self.dev.drain()?;
-            while let Some(chunk) = chunks.next() {
-                if chunks.peek().is_none() && read_final_response {
-                    self.dev.write_report(chunk)?;
-                    return self.dev.read_report(USB_RESPONSE_TIMEOUT);
-                }
+            for chunk in data.chunks(HID_REPORT_SIZE) {
                 self.dev.write_report(chunk)?;
             }
-            Ok(None)
+            if read_final_response {
+                self.dev.read_report(USB_RESPONSE_TIMEOUT)
+            } else {
+                Ok(None)
+            }
         })
     }
 
@@ -181,38 +106,24 @@ impl Transport for UsbHidTransport {
             .await
     }
 
+    /// `[0]` is a length/type byte, then the status block.
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus> {
-        Self::parse_usb_status(resp)
+        crate::status::decode_status_regs(resp.get(1..)?)
     }
 
+    /// A 1-byte prefix, then the same material payload BT carries — plus the
+    /// printer's ASCII serial at [`USB_DEVICE_SN_OFFSET`], which BT omits.
     fn parse_material_response(&self, resp: &[u8]) -> Option<MaterialInfo> {
-        // USB RETURN_MAT returns a 64-byte report with material data.
-        // Electron app reads: width_mm=A[19], height_mm=A[20], gap_mm=A[21],
-        // SN at A[31]+A[32]<<8, device serial at byteToString(A,11,21),
-        // and label serial "T0117..." as ASCII starting around offset 40.
-        Self::parse_usb_material(resp)
+        let device_sn = resp
+            .get(USB_DEVICE_SN_OFFSET..)
+            .and_then(crate::status::nul_str);
+        crate::status::parse_material_payload(resp.get(1..)?, device_sn)
     }
 
+    /// USB replies don't echo the command byte (`[0]` is a length/type byte),
+    /// so any reply is the ack.
     fn validate_response(&self, resp: &[u8], _expected_cmd: u8) -> bool {
-        // USB HID responses do NOT echo the command byte. resp[0] is a
-        // length/type indicator, not the command. Any non-empty response
-        // means the device acknowledged the command.
         !resp.is_empty()
-    }
-
-    fn parse_device_name_response(&self, _resp: &[u8]) -> Option<String> {
-        // Not available in the 8-byte USB HID status response format
-        None
-    }
-
-    fn parse_firmware_version_response(&self, _resp: &[u8]) -> Option<u8> {
-        // Not available in the 8-byte USB HID status response format
-        None
-    }
-
-    fn parse_version_response(&self, _resp: &[u8]) -> Option<String> {
-        // Not available in the 8-byte USB HID status response format
-        None
     }
 }
 
@@ -223,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_make_usb_cmd() {
-        let frame = UsbHidTransport::make_usb_cmd(cmd::CMD_CHECK_DEVICE, 0);
+        let frame = make_usb_cmd(cmd::CMD_CHECK_DEVICE, 0);
         assert_eq!(frame[0], USB_MAGIC1);
         assert_eq!(frame[1], USB_MAGIC2);
         assert_eq!(frame[2], 0x00); // param high
@@ -236,14 +147,14 @@ mod tests {
 
     #[test]
     fn test_make_usb_cmd_with_param() {
-        let frame = UsbHidTransport::make_usb_cmd(cmd::CMD_INQUIRY_STA, 0x1234);
+        let frame = make_usb_cmd(cmd::CMD_INQUIRY_STA, 0x1234);
         assert_eq!(frame[2], 0x12); // param high (big-endian)
         assert_eq!(frame[3], 0x34); // param low
     }
 
     #[test]
     fn test_make_usb_cmd_two() {
-        let frame = UsbHidTransport::make_usb_cmd_two(cmd::CMD_NEXT_ZIPPEDBULK, 512, 3);
+        let frame = make_usb_cmd_two(cmd::CMD_NEXT_ZIPPEDBULK, 512, 3);
         assert_eq!(frame[0], USB_MAGIC1);
         assert_eq!(frame[1], USB_MAGIC2);
         assert_eq!(frame[2], 0x02); // 512 >> 8 (big-endian)
@@ -257,7 +168,7 @@ mod tests {
     fn test_parse_usb_status_ready() {
         // Simulate: printing=true, no errors
         let resp = [0x11, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00];
-        let status = UsbHidTransport::parse_usb_status(&resp).unwrap();
+        let status = crate::status::decode_status_regs(&resp[1..]).unwrap();
         assert!(status.printing);
         assert!(!status.buf_full);
         assert!(!status.device_busy);
@@ -267,7 +178,7 @@ mod tests {
     #[test]
     fn test_parse_usb_status_errors() {
         let resp = [0x11, 0x02, 0x00, 0x08, 0x01, 0x05, 0x00, 0x00];
-        let status = UsbHidTransport::parse_usb_status(&resp).unwrap();
+        let status = crate::status::decode_status_regs(&resp[1..]).unwrap();
         assert!(status.label_rw_error);
         assert!(status.cover_open);
         assert!(status.label_not_installed);
@@ -277,15 +188,6 @@ mod tests {
 
     #[test]
     fn test_parse_usb_status_too_short() {
-        assert!(UsbHidTransport::parse_usb_status(&[0; 4]).is_none());
-    }
-
-    #[test]
-    fn test_validate_usb_response() {
-        // USB responses don't echo command byte; validation treats any non-empty slice as ok.
-        let resp = [0x08_u8];
-        assert!(!resp.is_empty());
-        let empty: &[u8] = &[];
-        assert!(empty.is_empty());
+        assert!(crate::status::decode_status_regs(&[0; 4]).is_none());
     }
 }

@@ -55,7 +55,7 @@ impl Printer {
 
     /// Open a Bluetooth printer at the given RFCOMM address (`AA:BB:CC:DD:EE:FF`).
     pub fn open_bt(addr: &str) -> Result<Self> {
-        let sock = crate::rfcomm::RfcommSocket::connect_default(addr)?;
+        let sock = crate::rfcomm::RfcommSocket::connect(addr)?;
         Ok(Self::new(Box::new(crate::spp_pipe::SppCodec::new(sock))))
     }
 

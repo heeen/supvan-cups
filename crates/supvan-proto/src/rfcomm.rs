@@ -1,19 +1,26 @@
 //! Raw Bluetooth RFCOMM socket using libc.
 //!
-//! Direct port of SupvanPrinter._connect_bt() / BluetoothUtils.ConnectedThread
-//! from the Python reference. Uses AF_BLUETOOTH + SOCK_STREAM + BTPROTO_RFCOMM.
+//! Port of the Android app's `BluetoothUtils.ConnectedThread`: drain stale
+//! input before every write, pace writes, poll for the reply.
 
+use crate::cmd::{CmdFrame, frame_len};
+use crate::data::DataFrame;
 use crate::error::{Error, Result};
-use std::os::unix::io::RawFd;
+use crate::spp_pipe::{SPP_CHUNK, SPP_CHUNK_DELAY};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::Duration;
 
 // Bluetooth socket constants (from <bluetooth/bluetooth.h> and <bluetooth/rfcomm.h>)
 const AF_BLUETOOTH: i32 = 31;
 const BTPROTO_RFCOMM: i32 = 3;
-const RFCOMM_DEFAULT_CHANNEL: u8 = 1;
+const RFCOMM_CHANNEL: u8 = 1;
 
-/// 512-byte data frames are sent as 128-byte sub-chunks (4 per frame).
-const BT_DATA_CHUNK_SIZE: usize = 128;
+/// Socket send/receive timeout outside a reply poll, and the reply budget.
+const IO_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often a reply poll wakes to check for bytes (the vendor's 20 ms).
+const REPLY_POLL: Duration = Duration::from_millis(20);
+/// Grace window for stragglers of a reply that isn't a `7E 5A` frame.
+const UNFRAMED_TRAILING_WAIT: Duration = Duration::from_millis(50);
 
 /// sockaddr_rc structure for RFCOMM connections.
 #[repr(C)]
@@ -25,281 +32,172 @@ struct SockaddrRc {
 
 /// A Bluetooth RFCOMM socket connection to a printer.
 pub struct RfcommSocket {
-    fd: RawFd,
-    timeout: Duration,
+    fd: OwnedFd,
 }
 
 impl RfcommSocket {
-    /// Return the raw file descriptor for this socket.
-    pub fn raw_fd(&self) -> RawFd {
-        self.fd
-    }
-
     /// Connect to a Bluetooth device by address string (e.g. "A4:93:40:A0:87:57").
-    pub fn connect(addr: &str, channel: u8) -> Result<Self> {
+    pub fn connect(addr: &str) -> Result<Self> {
         let bdaddr = parse_bdaddr(addr)?;
 
-        let fd = unsafe { libc::socket(AF_BLUETOOTH, libc::SOCK_STREAM, BTPROTO_RFCOMM) };
-        if fd < 0 {
+        let raw = unsafe { libc::socket(AF_BLUETOOTH, libc::SOCK_STREAM, BTPROTO_RFCOMM) };
+        if raw < 0 {
             return Err(Error::Io(std::io::Error::last_os_error()));
         }
+        // SAFETY: `raw` is a freshly opened socket nothing else owns.
+        let sock = Self {
+            fd: unsafe { OwnedFd::from_raw_fd(raw) },
+        };
 
         let sa = SockaddrRc {
             rc_family: AF_BLUETOOTH as u16,
             rc_bdaddr: bdaddr,
-            rc_channel: channel,
+            rc_channel: RFCOMM_CHANNEL,
         };
-
         let ret = unsafe {
             libc::connect(
-                fd,
+                sock.raw(),
                 &sa as *const SockaddrRc as *const libc::sockaddr,
                 std::mem::size_of::<SockaddrRc>() as libc::socklen_t,
             )
         };
         if ret < 0 {
-            let err = std::io::Error::last_os_error();
-            unsafe {
-                libc::close(fd);
-            }
-            return Err(Error::Io(err));
+            return Err(Error::Io(std::io::Error::last_os_error()));
         }
 
-        let sock = Self {
-            fd,
-            timeout: Duration::from_secs(2),
-        };
-        sock.set_timeout(Duration::from_secs(2))?;
+        sock.set_timeout(libc::SO_RCVTIMEO, IO_TIMEOUT)?;
+        sock.set_timeout(libc::SO_SNDTIMEO, IO_TIMEOUT)?;
         Ok(sock)
     }
 
-    /// Connect with default RFCOMM channel 1.
-    pub fn connect_default(addr: &str) -> Result<Self> {
-        Self::connect(addr, RFCOMM_DEFAULT_CHANNEL)
+    fn raw(&self) -> i32 {
+        self.fd.as_raw_fd()
     }
 
-    fn set_timeout(&self, timeout: Duration) -> Result<()> {
+    fn set_timeout(&self, opt: i32, timeout: Duration) -> Result<()> {
         let tv = libc::timeval {
             tv_sec: timeout.as_secs() as libc::time_t,
             tv_usec: timeout.subsec_micros() as libc::suseconds_t,
         };
-        for opt in [libc::SO_RCVTIMEO, libc::SO_SNDTIMEO] {
-            let ret = unsafe {
-                libc::setsockopt(
-                    self.fd,
-                    libc::SOL_SOCKET,
-                    opt,
-                    &tv as *const libc::timeval as *const libc::c_void,
-                    std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-                )
-            };
-            if ret < 0 {
-                return Err(Error::Io(std::io::Error::last_os_error()));
-            }
+        let ret = unsafe {
+            libc::setsockopt(
+                self.raw(),
+                libc::SOL_SOCKET,
+                opt,
+                &tv as *const libc::timeval as *const libc::c_void,
+                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            )
+        };
+        if ret < 0 {
+            return Err(Error::Io(std::io::Error::last_os_error()));
         }
         Ok(())
     }
 
-    /// Drain any pending input data.
+    /// One `recv`; `None` on timeout, would-block, error or EOF.
+    fn recv(&self, buf: &mut [u8], flags: i32) -> Option<usize> {
+        let n = unsafe { libc::recv(self.raw(), buf.as_mut_ptr().cast(), buf.len(), flags) };
+        usize::try_from(n).ok().filter(|&n| n > 0)
+    }
+
+    /// Discard anything already received — a stale reply would otherwise be
+    /// read as the answer to the next command.
     fn drain(&self) {
         let mut buf = [0u8; 1024];
-        // Set non-blocking temporarily
-        unsafe {
-            let flags = libc::fcntl(self.fd, libc::F_GETFL);
-            libc::fcntl(self.fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            loop {
-                let n = libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0);
-                if n <= 0 {
+        while self.recv(&mut buf, libc::MSG_DONTWAIT).is_some() {}
+    }
+
+    fn send_all(&self, mut data: &[u8]) -> Result<()> {
+        while !data.is_empty() {
+            let n = unsafe { libc::send(self.raw(), data.as_ptr().cast(), data.len(), 0) };
+            let Ok(n) = usize::try_from(n) else {
+                return Err(Error::Io(std::io::Error::last_os_error()));
+            };
+            data = &data[n..];
+        }
+        Ok(())
+    }
+
+    /// Poll for a reply. Returns as soon as a `7E 5A` frame is complete — a
+    /// fixed grace wait here cost ~50 ms per data-packet ack, enough to starve
+    /// the printhead mid-label over Bluetooth.
+    fn read_reply(&self) -> Result<Option<Vec<u8>>> {
+        self.set_timeout(libc::SO_RCVTIMEO, REPLY_POLL)?;
+        let mut response = Vec::new();
+        let mut buf = [0u8; 512];
+        let polls = IO_TIMEOUT.as_millis() / REPLY_POLL.as_millis();
+        for _ in 0..polls {
+            let Some(n) = self.recv(&mut buf, 0) else {
+                if !response.is_empty() && frame_len(&response).is_none() {
+                    break;
+                }
+                continue;
+            };
+            response.extend_from_slice(&buf[..n]);
+            match frame_len(&response) {
+                Some(len) if response.len() >= len => break,
+                Some(_) => {}
+                None if response.len() < 4 => {}
+                None => {
+                    self.set_timeout(libc::SO_RCVTIMEO, UNFRAMED_TRAILING_WAIT)?;
+                    if let Some(n) = self.recv(&mut buf, 0) {
+                        response.extend_from_slice(&buf[..n]);
+                    }
                     break;
                 }
             }
-            libc::fcntl(self.fd, libc::F_SETFL, flags);
         }
+        self.set_timeout(libc::SO_RCVTIMEO, IO_TIMEOUT)?;
+        Ok((!response.is_empty()).then_some(response))
     }
 
-    /// Write data in chunks with delays (matching BluetoothUtils.ConnectedThread.write).
-    pub fn write_chunked(&self, data: &[u8], chunk_size: usize, delay: Duration) -> Result<()> {
-        let mut offset = 0;
-        while offset < data.len() {
-            let end = (offset + chunk_size).min(data.len());
-            self.drain();
-            let chunk = &data[offset..end];
-            let mut sent = 0;
-            while sent < chunk.len() {
-                let n = unsafe {
-                    libc::send(
-                        self.fd,
-                        chunk[sent..].as_ptr() as *const libc::c_void,
-                        chunk.len() - sent,
-                        0,
-                    )
-                };
-                if n < 0 {
-                    return Err(Error::Io(std::io::Error::last_os_error()));
-                }
-                sent += n as usize;
-            }
-            std::thread::sleep(delay);
-            offset = end;
-        }
-        Ok(())
-    }
-
-    /// Read response by polling.
-    pub fn read_response(
-        &self,
-        max_wait: Duration,
-        poll_interval: Duration,
-    ) -> Result<Option<Vec<u8>>> {
-        let mut response = Vec::new();
-        let polls = (max_wait.as_millis() / poll_interval.as_millis().max(1)) as usize;
-        let mut buf = [0u8; 512];
-
-        // Set short timeout for polling
-        let poll_tv = libc::timeval {
-            tv_sec: 0,
-            tv_usec: poll_interval.as_micros() as libc::suseconds_t,
-        };
-        unsafe {
-            libc::setsockopt(
-                self.fd,
-                libc::SOL_SOCKET,
-                libc::SO_RCVTIMEO,
-                &poll_tv as *const libc::timeval as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            );
-        }
-
-        for _ in 0..polls {
-            let n =
-                unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
-            if n > 0 {
-                response.extend_from_slice(&buf[..n as usize]);
-                match frame_len(&response) {
-                    // Stop the moment the frame is whole: a fixed grace wait
-                    // here cost ~50 ms per data-packet ack, enough to starve
-                    // the printhead mid-label over Bluetooth.
-                    Some(len) if response.len() >= len => break,
-                    Some(_) => continue,
-                    None if response.len() < 4 => continue,
-                    None => {
-                        self.read_trailing(&mut response, &mut buf);
-                        break;
-                    }
-                }
-            } else if !response.is_empty() && frame_len(&response).is_none() {
-                break;
-            }
-        }
-
-        // Restore timeout
-        self.set_timeout(self.timeout)?;
-
-        if response.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(response))
-        }
-    }
-
-    /// Unframed reply: give stragglers one short window, as before.
-    fn read_trailing(&self, response: &mut Vec<u8>, buf: &mut [u8]) {
-        let extra_tv = libc::timeval {
-            tv_sec: 0,
-            tv_usec: 50_000,
-        };
-        unsafe {
-            libc::setsockopt(
-                self.fd,
-                libc::SOL_SOCKET,
-                libc::SO_RCVTIMEO,
-                &extra_tv as *const libc::timeval as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            );
-        }
-        let n = unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
-        if n > 0 {
-            response.extend_from_slice(&buf[..n as usize]);
-        }
-    }
-
-    /// Send a 16-byte command and read response.
-    pub fn send_cmd(&self, cmd_frame: &[u8; 16]) -> Result<Option<Vec<u8>>> {
-        log::debug!("TX: {:02x?}", cmd_frame);
-        self.write_chunked(cmd_frame, 512, Duration::from_millis(10))?;
-        let resp = self.read_response(Duration::from_secs(2), Duration::from_millis(20))?;
-        if let Some(ref data) = resp {
-            log::debug!("RX: {:02x?}", &data[..data.len().min(40)]);
-        } else {
-            log::debug!("RX: (no response)");
+    /// Send a command frame and read the reply.
+    fn send_cmd_blocking(&self, frame: &CmdFrame) -> Result<Option<Vec<u8>>> {
+        log::debug!("TX: {frame:02x?}");
+        self.drain();
+        self.send_all(frame)?;
+        std::thread::sleep(SPP_CHUNK_DELAY);
+        let resp = self.read_reply()?;
+        match &resp {
+            Some(data) => log::debug!("RX: {:02x?}", &data[..data.len().min(40)]),
+            None => log::debug!("RX: (no response)"),
         }
         Ok(resp)
     }
 
-    /// Send a 512-byte data frame as 4x128-byte chunks with 10ms delay.
-    pub fn send_data_frame(
+    /// Send a data frame as paced 128-byte chunks (`transferSplitData`).
+    fn send_data_frame_blocking(
         &self,
-        frame: &[u8; 512],
+        frame: &DataFrame,
         read_response: bool,
     ) -> Result<Option<Vec<u8>>> {
-        for chunk in frame.chunks(BT_DATA_CHUNK_SIZE) {
-            std::thread::sleep(Duration::from_millis(10));
+        for chunk in frame.chunks(SPP_CHUNK) {
+            std::thread::sleep(SPP_CHUNK_DELAY);
             self.drain();
-            let mut sent = 0;
-            while sent < chunk.len() {
-                let n = unsafe {
-                    libc::send(
-                        self.fd,
-                        chunk[sent..].as_ptr() as *const libc::c_void,
-                        chunk.len() - sent,
-                        0,
-                    )
-                };
-                if n < 0 {
-                    return Err(Error::Io(std::io::Error::last_os_error()));
-                }
-                sent += n as usize;
-            }
+            self.send_all(chunk)?;
         }
         if read_response {
-            self.read_response(Duration::from_secs(2), Duration::from_millis(20))
+            self.read_reply()
         } else {
             Ok(None)
-        }
-    }
-}
-
-impl Drop for RfcommSocket {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.fd);
         }
     }
 }
 
 #[async_trait::async_trait]
 impl crate::spp_pipe::SppPipe for RfcommSocket {
-    async fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>> {
+    async fn send_cmd_frame(&self, frame: &CmdFrame) -> Result<Option<Vec<u8>>> {
         // Blocking libc socket I/O: run in place so concurrent tasks (status
         // polling, IPP serving) migrate off this worker during the round-trip.
-        tokio::task::block_in_place(|| self.send_cmd(frame))
+        tokio::task::block_in_place(|| self.send_cmd_blocking(frame))
     }
 
     async fn send_data_frame(
         &self,
-        frame: &[u8; 512],
+        frame: &DataFrame,
         read_response: bool,
     ) -> Result<Option<Vec<u8>>> {
-        tokio::task::block_in_place(|| RfcommSocket::send_data_frame(self, frame, read_response))
-    }
-}
-
-/// Total length of a `7E 5A` frame, from its little-endian length field
-/// (payload length + 4 header bytes — 16 for a command, 512 for a data frame).
-fn frame_len(resp: &[u8]) -> Option<usize> {
-    match resp {
-        [0x7E, 0x5A, lo, hi, ..] => Some(usize::from(u16::from_le_bytes([*lo, *hi])) + 4),
-        _ => None,
+        tokio::task::block_in_place(|| self.send_data_frame_blocking(frame, read_response))
     }
 }
 
@@ -321,14 +219,6 @@ fn parse_bdaddr(addr: &str) -> Result<[u8; 6]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frame_len_reads_the_header() {
-        assert_eq!(frame_len(&crate::cmd::make_cmd(0x11, 0)), Some(16));
-        assert_eq!(frame_len(&[0x7E, 0x5A, 0x13, 0x00, 0x10]), Some(23));
-        assert_eq!(frame_len(&[0x7E, 0x5A, 0xFC, 0x01]), Some(512));
-        assert_eq!(frame_len(&[0x08, 0x00, 0x00]), None);
-    }
 
     #[test]
     fn test_parse_bdaddr() {

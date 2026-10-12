@@ -1,6 +1,13 @@
 use crate::cmd::{
-    CMD_INQUIRY_STA, CMD_RD_DEV_NAME, CMD_READ_FWVER, CMD_READ_REV, CMD_RETURN_MAT, MAGIC1, MAGIC2,
+    CMD_INQUIRY_STA, CMD_OFFSET, CMD_RD_DEV_NAME, CMD_READ_FWVER, CMD_READ_REV, CMD_RETURN_MAT,
+    MAGIC1, MAGIC2,
 };
+use crate::error::{Error, Result};
+
+/// The status block both transports carry: MSTA low/high, FSTA low/high,
+/// print count (LE u16). BT puts it at byte 14, USB at byte 1.
+pub(crate) const STATUS_REGS_LEN: usize = 6;
+const BT_STATUS_OFFSET: usize = 14;
 
 /// Length of the BT response framing that precedes every payload. Parsers slice
 /// the payload from `data[BT_RESP_HEADER_LEN..]`.
@@ -67,29 +74,32 @@ impl PrinterStatus {
         self.error_flags().iter().any(|(set, _)| *set)
     }
 
-    /// Return a human-readable description of any errors.
+    /// Every named flag with its short log name, in display order.
+    pub fn flags(&self) -> [(&'static str, bool); 12] {
+        [
+            ("printing", self.printing),
+            ("busy", self.device_busy),
+            ("buf_full", self.buf_full),
+            ("cover_open", self.cover_open),
+            ("label_end", self.label_end),
+            ("no_label", self.label_not_installed),
+            ("label_rw_err", self.label_rw_error),
+            ("label_mode_err", self.label_mode_error),
+            ("ribbon_end", self.ribbon_end),
+            ("ribbon_rw_err", self.ribbon_rw_error),
+            ("head_hot", self.head_temp_high),
+            ("low_batt", self.low_battery),
+        ]
+    }
+
     /// One-line summary for logs: the flags that are set, plus the raw
     /// registers so an undecoded bit is still visible in a trace.
     pub fn summary(&self) -> String {
-        let mut set: Vec<&str> = Vec::new();
-        for (on, name) in [
-            (self.printing, "printing"),
-            (self.device_busy, "busy"),
-            (self.buf_full, "buf_full"),
-            (self.cover_open, "cover_open"),
-            (self.label_end, "label_end"),
-            (self.label_not_installed, "no_label"),
-            (self.label_rw_error, "label_rw_err"),
-            (self.label_mode_error, "label_mode_err"),
-            (self.ribbon_end, "ribbon_end"),
-            (self.ribbon_rw_error, "ribbon_rw_err"),
-            (self.head_temp_high, "head_hot"),
-            (self.low_battery, "low_batt"),
-        ] {
-            if on {
-                set.push(name);
-            }
-        }
+        let set: Vec<&str> = self
+            .flags()
+            .into_iter()
+            .filter_map(|(name, on)| on.then_some(name))
+            .collect();
         let flags = if set.is_empty() {
             "-".to_string()
         } else {
@@ -102,16 +112,23 @@ impl PrinterStatus {
         )
     }
 
+    /// Human-readable list of the error flags that are set, if any.
     pub fn error_description(&self) -> Option<String> {
         let errors: Vec<&str> = self
             .error_flags()
             .into_iter()
             .filter_map(|(set, msg)| set.then_some(msg))
             .collect();
-        if errors.is_empty() {
-            None
-        } else {
-            Some(errors.join(", "))
+        (!errors.is_empty()).then(|| errors.join(", "))
+    }
+
+    /// `Err` naming the error flags, if any are set; `context` says when.
+    pub fn ensure_ok(&self, context: &str) -> Result<()> {
+        match self.error_description() {
+            Some(errors) => Err(Error::InvalidResponse(format!(
+                "printer error {context}: {errors}"
+            ))),
+            None => Ok(()),
         }
     }
 }
@@ -135,38 +152,21 @@ pub struct MaterialInfo {
 }
 
 /// Parse printer status from CMD_INQUIRY_STA response.
-pub fn parse_status(data: &[u8]) -> Option<PrinterStatus> {
-    if data.len() < 20 {
+pub(crate) fn parse_status(data: &[u8]) -> Option<PrinterStatus> {
+    if !check_header(data, BT_STATUS_OFFSET + STATUS_REGS_LEN, CMD_INQUIRY_STA) {
         return None;
     }
-    if data[0] != MAGIC1 || data[1] != MAGIC2 {
-        return None;
-    }
-    if data[7] != CMD_INQUIRY_STA {
-        return None;
-    }
-
-    Some(decode_status_bits(
-        data[14],
-        data[15],
-        data[16],
-        data[17],
-        u16::from_le_bytes([data[18], data[19]]),
-    ))
+    decode_status_regs(&data[BT_STATUS_OFFSET..])
 }
 
-/// Decode the four status register bytes (MSTA low/high, FSTA low/high) plus
-/// the print counter into a [`PrinterStatus`]. Shared by the BT framing
-/// ([`parse_status`]) and the USB HID framing (`parse_usb_status`), which carry
-/// the same bit layout at different offsets.
-pub(crate) fn decode_status_bits(
-    b0: u8,
-    b1: u8,
-    b2: u8,
-    b3: u8,
-    print_count: u16,
-) -> PrinterStatus {
-    PrinterStatus {
+/// Decode the [`STATUS_REGS_LEN`]-byte status block at the start of `regs`.
+/// Shared by the BT and USB framings, which carry the same bit layout at
+/// different offsets.
+pub(crate) fn decode_status_regs(regs: &[u8]) -> Option<PrinterStatus> {
+    let &[b0, b1, b2, b3, c0, c1, ..] = regs else {
+        return None;
+    };
+    Some(PrinterStatus {
         buf_full: b0 & 0x01 != 0,
         label_rw_error: b0 & 0x02 != 0,
         label_end: b0 & 0x04 != 0,
@@ -180,9 +180,9 @@ pub(crate) fn decode_status_bits(
         insert_usb: b2 & 0x10 != 0,
         printing: b2 & 0x40 != 0,
         label_not_installed: b3 & 0x01 != 0,
-        print_count,
+        print_count: u16::from_le_bytes([c0, c1]),
         regs: [b0, b1, b2, b3],
-    }
+    })
 }
 
 /// Parse material info from CMD_RETURN_MAT response (BT framing).
@@ -194,7 +194,7 @@ pub(crate) fn decode_status_bits(
 /// the response ends at the last counter field, before the trailing
 /// ASCII serial USB ships. Use the BlueZ `Device1.Name` property for
 /// the BT-side serial instead.
-pub fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
+pub(crate) fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
     if !check_header(data, BT_RESP_HEADER_LEN, CMD_RETURN_MAT) {
         return None;
     }
@@ -205,8 +205,7 @@ pub fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
 /// USB tacks on after the counter fields (16 ASCII bytes null-padded);
 /// BT doesn't include it.
 ///
-/// Common payload layout (verified by `crates/supvan-cli/examples/material_probe`
-/// against a T50M Pro):
+/// Common payload layout (verified against a T50M Pro over both transports):
 ///
 /// | Offset | Size | Field                                           |
 /// |-------:|-----:|-------------------------------------------------|
@@ -219,7 +218,10 @@ pub fn parse_material(data: &[u8]) -> Option<MaterialInfo> {
 /// |  20    | 1    | gap_mm                                          |
 /// |  21    | 4    | labels remaining, LE u32                        |
 /// |  25+   |      | additional vendor fields (not yet decoded)      |
-pub fn parse_material_payload(p: &[u8], device_sn_ascii: Option<String>) -> Option<MaterialInfo> {
+pub(crate) fn parse_material_payload(
+    p: &[u8],
+    device_sn_ascii: Option<String>,
+) -> Option<MaterialInfo> {
     if p.len() < 21 {
         return None;
     }
@@ -230,11 +232,10 @@ pub fn parse_material_payload(p: &[u8], device_sn_ascii: Option<String>) -> Opti
     let width_mm = p[18];
     let height_mm = p[19];
     let gap_mm = p[20];
-    let remaining = if p.len() >= 25 {
-        Some(u32::from_le_bytes([p[21], p[22], p[23], p[24]]))
-    } else {
-        None
-    };
+    let remaining = p
+        .get(21..25)
+        .and_then(|b| b.try_into().ok())
+        .map(u32::from_le_bytes);
     Some(MaterialInfo {
         uuid,
         code,
@@ -249,7 +250,7 @@ pub fn parse_material_payload(p: &[u8], device_sn_ascii: Option<String>) -> Opti
 }
 
 /// Parse device name from CMD_RD_DEV_NAME response.
-pub fn parse_device_name(data: &[u8]) -> Option<String> {
+pub(crate) fn parse_device_name(data: &[u8]) -> Option<String> {
     if !check_header(data, BT_RESP_HEADER_LEN + 1, CMD_RD_DEV_NAME) {
         return None;
     }
@@ -259,14 +260,11 @@ pub fn parse_device_name(data: &[u8]) -> Option<String> {
     if data_len == 0 || data_len > data.len() - BT_RESP_HEADER_LEN {
         return None;
     }
-    let name = String::from_utf8_lossy(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + data_len])
-        .trim_end_matches('\0')
-        .to_string();
-    if name.is_empty() { None } else { Some(name) }
+    nul_str(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + data_len])
 }
 
 /// Parse firmware version from CMD_READ_FWVER response.
-pub fn parse_firmware_version(data: &[u8]) -> Option<u8> {
+pub(crate) fn parse_firmware_version(data: &[u8]) -> Option<u8> {
     if !check_header(data, BT_RESP_HEADER_LEN + 1, CMD_READ_FWVER) {
         return None;
     }
@@ -274,29 +272,36 @@ pub fn parse_firmware_version(data: &[u8]) -> Option<u8> {
 }
 
 /// Parse protocol version from CMD_READ_REV response.
-pub fn parse_version(data: &[u8]) -> Option<String> {
+pub(crate) fn parse_version(data: &[u8]) -> Option<String> {
     if !check_header(data, BT_RESP_HEADER_LEN + 3, CMD_READ_REV) {
         return None;
     }
-    let ver = String::from_utf8_lossy(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + 3])
-        .trim_end_matches('\0')
-        .to_string();
-    if ver.is_empty() { None } else { Some(ver) }
+    nul_str(&data[BT_RESP_HEADER_LEN..BT_RESP_HEADER_LEN + 3])
 }
 
 /// Check a response frame is at least `min_len` bytes, starts with the protocol
 /// magic, and echoes `cmd` in the command slot. Shared guard for every BT-framed
 /// parser; `min_len` makes each parser's length requirement explicit.
 fn check_header(data: &[u8], min_len: usize, cmd: u8) -> bool {
-    data.len() >= min_len && data[0] == MAGIC1 && data[1] == MAGIC2 && data[7] == cmd
+    data.len() >= min_len.max(CMD_OFFSET + 1)
+        && data[0] == MAGIC1
+        && data[1] == MAGIC2
+        && data[CMD_OFFSET] == cmd
 }
 
 /// Validate a response frame has correct magic and echoes the expected command.
-pub fn validate_response(data: &[u8], expected_cmd: u8) -> bool {
-    check_header(data, 8, expected_cmd)
+pub(crate) fn validate_response(data: &[u8], expected_cmd: u8) -> bool {
+    check_header(data, CMD_OFFSET + 1, expected_cmd)
 }
 
-fn hex_upper(bytes: &[u8]) -> String {
+/// The text before the first NUL (the firmware pads strings with zeros);
+/// `None` if that is empty.
+pub(crate) fn nul_str(bytes: &[u8]) -> Option<String> {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    (end > 0).then(|| String::from_utf8_lossy(&bytes[..end]).into_owned())
+}
+
+pub(crate) fn hex_upper(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02X}", b)).collect()
 }
 
@@ -313,8 +318,7 @@ mod tests {
         resp[15] = b15;
         resp[16] = b16;
         resp[17] = b17;
-        resp[18] = (count & 0xFF) as u8;
-        resp[19] = (count >> 8) as u8;
+        resp[18..20].copy_from_slice(&count.to_le_bytes());
         resp
     }
 

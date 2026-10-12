@@ -60,7 +60,7 @@ pub fn chars_for_service(service: Uuid) -> Option<(Uuid, Uuid)> {
 /// offset 7 of the SPP frame (the same offset the request carries it).
 #[cfg_attr(not(feature = "ble"), allow(dead_code))]
 fn response_matches(resp: &[u8], cmd: u8) -> bool {
-    resp.get(7) == Some(&cmd)
+    resp.get(crate::cmd::CMD_OFFSET) == Some(&cmd)
 }
 
 #[cfg(feature = "ble")]
@@ -69,8 +69,10 @@ pub use imp::BlePipe;
 #[cfg(feature = "ble")]
 mod imp {
     use super::{chars_for_service, response_matches};
+    use crate::cmd::{CMD_OFFSET, CmdFrame};
+    use crate::data::DataFrame;
     use crate::error::{Error, Result};
-    use crate::spp_pipe::SppPipe;
+    use crate::spp_pipe::{SPP_CHUNK, SPP_CHUNK_DELAY, SppPipe};
     use bluer::gatt::WriteOp;
     use bluer::gatt::remote::{Characteristic, CharacteristicWriteRequest};
     use bluer::{Adapter, Address, Device, DiscoveryFilter, DiscoveryTransport, Session};
@@ -81,11 +83,6 @@ mod imp {
 
     /// Response poll budget — matches the vendor app's 200 × 20 ms ≈ 4 s.
     const RESPONSE_TIMEOUT: Duration = Duration::from_secs(4);
-    /// GATT write fragment size: the vendor splits every 512-byte data frame
-    /// into 4 × 128 bytes, so 128 is what the firmware is fed.
-    const BLE_CHUNK: usize = 128;
-    /// Pacing between fragments, as passed by the T50/G15 print flows.
-    const BLE_CHUNK_DELAY: Duration = Duration::from_millis(10);
     /// BlueZ can leave `Connect()` pending for minutes (bluer's own D-Bus
     /// budget is 120 s). Give up sooner and retry — an LE connect that is
     /// going to work generally works within a few seconds.
@@ -107,17 +104,13 @@ mod imp {
         _session: Session,
     }
 
-    fn map_err(e: bluer::Error) -> Error {
-        Error::Ble(e.to_string())
-    }
-
     impl BlePipe {
         /// Connect to a BLE printer by address, discover its Supvan GATT
         /// service, and subscribe to notifications.
         pub async fn connect(address: &str) -> Result<Self> {
-            let session = Session::new().await.map_err(map_err)?;
-            let adapter = session.default_adapter().await.map_err(map_err)?;
-            adapter.set_powered(true).await.map_err(map_err)?;
+            let session = Session::new().await?;
+            let adapter = session.default_adapter().await?;
+            adapter.set_powered(true).await?;
             let addr: Address = address
                 .parse()
                 .map_err(|_| Error::InvalidParam(format!("invalid BLE address: {address}")))?;
@@ -127,12 +120,12 @@ mod imp {
             // Scan first if it has forgotten this one — and finish scanning
             // before connecting, because an open discovery session is the
             // classic reason `Connect()` never returns.
-            let known = adapter.device_addresses().await.map_err(map_err)?;
+            let known = adapter.device_addresses().await?;
             if !known.contains(&addr) {
                 scan_for(&adapter, addr).await?;
             }
 
-            let device = adapter.device(addr).map_err(map_err)?;
+            let device = adapter.device(addr)?;
             connect_with_retry(&device).await?;
             // Trusted lets BlueZ re-establish the link later without an agent,
             // matching what the classic path does after pairing.
@@ -141,7 +134,7 @@ mod imp {
             }
 
             let (notify_char, write_char) = find_chars(&device).await?;
-            let notify = notify_char.notify().await.map_err(map_err)?;
+            let notify = notify_char.notify().await?;
             Ok(Self {
                 write_char,
                 notify: Mutex::new(Box::pin(notify)),
@@ -150,7 +143,7 @@ mod imp {
             })
         }
 
-        /// Write `data` as paced [`BLE_CHUNK`]-sized ATT write requests.
+        /// Write `data` as paced [`SPP_CHUNK`]-sized ATT write requests.
         ///
         /// `bluer`'s `Characteristic::write` defaults to `WriteOp::Command`
         /// (write *without* response), so the op type has to be spelled out —
@@ -160,14 +153,11 @@ mod imp {
                 op_type: WriteOp::Request,
                 ..Default::default()
             };
-            for (i, chunk) in data.chunks(BLE_CHUNK).enumerate() {
+            for (i, chunk) in data.chunks(SPP_CHUNK).enumerate() {
                 if i > 0 {
-                    tokio::time::sleep(BLE_CHUNK_DELAY).await;
+                    tokio::time::sleep(SPP_CHUNK_DELAY).await;
                 }
-                self.write_char
-                    .write_ext(chunk, &req)
-                    .await
-                    .map_err(map_err)?;
+                self.write_char.write_ext(chunk, &req).await?;
             }
             Ok(())
         }
@@ -198,9 +188,8 @@ mod imp {
                 transport: DiscoveryTransport::Le,
                 ..Default::default()
             })
-            .await
-            .map_err(map_err)?;
-        let mut events = adapter.discover_devices().await.map_err(map_err)?;
+            .await?;
+        let mut events = adapter.discover_devices().await?;
         let found = async {
             while let Some(ev) = events.next().await {
                 if matches!(ev, bluer::AdapterEvent::DeviceAdded(a) if a == addr) {
@@ -216,7 +205,7 @@ mod imp {
         // caller connects.
         drop(events);
         if !found {
-            return Err(Error::Ble(format!("{addr} did not advertise")));
+            return Err(Error::BleSetup(format!("{addr} did not advertise")));
         }
         Ok(())
     }
@@ -225,7 +214,7 @@ mod imp {
     async fn connect_with_retry(device: &Device) -> Result<()> {
         let mut last = None;
         for attempt in 1..=CONNECT_ATTEMPTS {
-            if device.is_connected().await.map_err(map_err)? {
+            if device.is_connected().await? {
                 return Ok(());
             }
             match tokio::time::timeout(CONNECT_TIMEOUT, device.connect()).await {
@@ -243,18 +232,20 @@ mod imp {
                 }
             }
         }
-        Err(Error::Ble(last.unwrap_or_else(|| "connect failed".into())))
+        Err(Error::BleSetup(
+            last.unwrap_or_else(|| "connect failed".into()),
+        ))
     }
 
     async fn find_chars(device: &Device) -> Result<(Characteristic, Characteristic)> {
-        for service in device.services().await.map_err(map_err)? {
-            let su = service.uuid().await.map_err(map_err)?;
+        for service in device.services().await? {
+            let su = service.uuid().await?;
             let Some((notify_uuid, write_uuid)) = chars_for_service(su) else {
                 continue;
             };
             let (mut notify_char, mut write_char) = (None, None);
-            for c in service.characteristics().await.map_err(map_err)? {
-                let cu = c.uuid().await.map_err(map_err)?;
+            for c in service.characteristics().await? {
+                let cu = c.uuid().await?;
                 if cu == notify_uuid {
                     notify_char = Some(c.clone());
                 }
@@ -267,21 +258,23 @@ mod imp {
                 return Ok((n, w));
             }
         }
-        Err(Error::Ble("no supported Supvan GATT service found".into()))
+        Err(Error::BleSetup(
+            "no supported Supvan GATT service found".into(),
+        ))
     }
 
     #[async_trait::async_trait]
     impl SppPipe for BlePipe {
-        async fn send_cmd_frame(&self, frame: &[u8; 16]) -> Result<Option<Vec<u8>>> {
+        async fn send_cmd_frame(&self, frame: &CmdFrame) -> Result<Option<Vec<u8>>> {
             self.write_chunked(frame).await?;
-            self.await_response(frame[7]).await
+            self.await_response(frame[CMD_OFFSET]).await
         }
 
         /// The flag is moot here: [`Self::acks_data_frames`] is false, so the
         /// codec never asks for a reply that BLE would not send.
         async fn send_data_frame(
             &self,
-            frame: &[u8; 512],
+            frame: &DataFrame,
             _read_response: bool,
         ) -> Result<Option<Vec<u8>>> {
             self.write_chunked(frame).await?;

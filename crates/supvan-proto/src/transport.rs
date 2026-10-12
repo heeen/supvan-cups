@@ -65,8 +65,8 @@ impl Flow {
 /// and USB HID (hidraw device, 0xC0/40 framing, 64-byte reports) implement
 /// this trait with their own command encoding, data framing, and response parsing.
 ///
-/// The I/O methods are async so a future BLE GATT transport (natively async via
-/// `bluer`) fits the same trait; the blocking RFCOMM/HID transports bridge their
+/// The I/O methods are async because the BLE GATT pipe is natively async (via
+/// `bluer`); the blocking RFCOMM/HID transports bridge their
 /// FFI calls with `tokio::task::block_in_place`. Response parsing stays sync —
 /// it's pure byte work with no I/O.
 #[async_trait]
@@ -106,12 +106,18 @@ pub trait Transport: Send + Sync {
     /// Validate response echoes the expected command byte.
     fn validate_response(&self, resp: &[u8], expected_cmd: u8) -> bool;
 
-    /// Parse device name from response.
-    fn parse_device_name_response(&self, resp: &[u8]) -> Option<String>;
+    /// Parse device name from response. Only SPP framing carries one.
+    fn parse_device_name_response(&self, _resp: &[u8]) -> Option<String> {
+        None
+    }
 
-    /// Parse firmware version from response.
-    fn parse_firmware_version_response(&self, resp: &[u8]) -> Option<u8>;
+    /// Parse firmware version from response. Only SPP framing carries one.
+    fn parse_firmware_version_response(&self, _resp: &[u8]) -> Option<u8> {
+        None
+    }
 
-    /// Parse protocol version from response.
-    fn parse_version_response(&self, resp: &[u8]) -> Option<String>;
+    /// Parse protocol version from response. Only SPP framing carries one.
+    fn parse_version_response(&self, _resp: &[u8]) -> Option<String> {
+        None
+    }
 }

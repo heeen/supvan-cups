@@ -1,10 +1,22 @@
 /// Protocol magic bytes.
-pub const MAGIC1: u8 = 0x7E;
-pub const MAGIC2: u8 = 0x5A;
-pub const PROTO_ID: u8 = 0x10;
-pub const PROTO_VER: u8 = 0x01;
-pub const MARKER_AA: u8 = 0xAA;
-pub const DATA_TYPE: u8 = 0x02;
+pub(crate) const MAGIC1: u8 = 0x7E;
+pub(crate) const MAGIC2: u8 = 0x5A;
+pub(crate) const PROTO_ID: u8 = 0x10;
+pub(crate) const PROTO_VER: u8 = 0x01;
+pub(crate) const MARKER_AA: u8 = 0xAA;
+pub(crate) const DATA_TYPE: u8 = 0x02;
+/// Byte 11 of every command frame. The vendor always sets it to 1
+/// (`bArr2[11] = 1`); its meaning is unknown.
+const CMD_FLAGS: u8 = 0x01;
+
+/// Every SPP frame opens with the two magic bytes and a little-endian payload
+/// length; the frame is that many bytes plus this header.
+pub(crate) const FRAME_HEADER_LEN: usize = 4;
+/// A command frame, host to device.
+pub(crate) const CMD_FRAME_LEN: usize = 16;
+pub(crate) type CmdFrame = [u8; CMD_FRAME_LEN];
+/// Where frames in both directions carry the command byte.
+pub(crate) const CMD_OFFSET: usize = 7;
 
 /// Command bytes.
 pub const CMD_BUF_FULL: u8 = 0x10;
@@ -176,36 +188,51 @@ pub const CMD_ADJ_RD_CONTINUE: u8 = 0xB2;
 ///   [10] 0x00  [11] 0x01
 ///   [12..13] param LE
 ///   [14..15] 0x0000
-pub fn make_cmd(cmd: u8, param: u16) -> [u8; 16] {
+pub(crate) fn make_cmd(cmd: u8, param: u16) -> CmdFrame {
     // A plain command is a start-transfer frame with no block_count; the param
     // occupies the block_size field at bytes 12-13.
     make_cmd_start_trans(cmd, param, 0)
 }
-
-/// Declared payload length in byte 2 of every command frame (12 bytes).
-const CMD_PAYLOAD_LEN: u8 = 0x0C;
 
 /// Build a 16-byte start-transfer command.
 ///
 /// Same as `make_cmd` but bytes 12-15 carry block_size and block_count.
 /// Used for CMD_NEXT_ZIPPEDBULK (block_size=512, block_count=num_packets)
 /// and CMD_BUF_FULL (block_size=compressed_len, block_count=speed).
-pub fn make_cmd_start_trans(cmd: u8, block_size: u16, block_count: u16) -> [u8; 16] {
-    let mut pkt = [0u8; 16];
+pub(crate) fn make_cmd_start_trans(cmd: u8, block_size: u16, block_count: u16) -> CmdFrame {
+    let mut pkt = [0u8; CMD_FRAME_LEN];
     pkt[0] = MAGIC1;
     pkt[1] = MAGIC2;
-    pkt[2] = CMD_PAYLOAD_LEN;
+    pkt[2..4].copy_from_slice(&((CMD_FRAME_LEN - FRAME_HEADER_LEN) as u16).to_le_bytes());
     pkt[4] = PROTO_ID;
     pkt[5] = PROTO_VER;
     pkt[6] = MARKER_AA;
-    pkt[7] = cmd;
-    pkt[11] = 0x01;
+    pkt[CMD_OFFSET] = cmd;
+    pkt[11] = CMD_FLAGS;
     pkt[12..14].copy_from_slice(&block_size.to_le_bytes());
     pkt[14..16].copy_from_slice(&block_count.to_le_bytes());
-
-    let chk: u16 = pkt[10..16].iter().map(|&b| b as u16).sum();
+    let chk = checksum16(&pkt[10..]);
     pkt[8..10].copy_from_slice(&chk.to_le_bytes());
     pkt
+}
+
+/// The protocol's checksum: the byte sum, truncated to 16 bits. Command frames
+/// sum bytes 10..16, data packets bytes 4..506.
+pub(crate) fn checksum16(bytes: &[u8]) -> u16 {
+    bytes
+        .iter()
+        .fold(0u16, |acc, &b| acc.wrapping_add(u16::from(b)))
+}
+
+/// Total length of a `7E 5A` frame, from its header's length field — `None`
+/// until the header is in or if `resp` isn't one.
+pub(crate) fn frame_len(resp: &[u8]) -> Option<usize> {
+    match resp {
+        [MAGIC1, MAGIC2, lo, hi, ..] => {
+            Some(usize::from(u16::from_le_bytes([*lo, *hi])) + FRAME_HEADER_LEN)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -236,9 +263,7 @@ mod tests {
         let pkt = make_cmd(CMD_INQUIRY_STA, 0x1234);
         assert_eq!(pkt[12], 0x34);
         assert_eq!(pkt[13], 0x12);
-        let chk: u16 = pkt[10..16].iter().map(|&b| b as u16).sum();
-        assert_eq!(pkt[8], (chk & 0xFF) as u8);
-        assert_eq!(pkt[9], (chk >> 8) as u8);
+        assert_eq!(pkt[8..10], checksum16(&pkt[10..16]).to_le_bytes());
     }
 
     #[test]
@@ -249,8 +274,6 @@ mod tests {
         assert_eq!(pkt[13], 0x02); // 512 >> 8
         assert_eq!(pkt[14], 0x03);
         assert_eq!(pkt[15], 0x00);
-        let chk: u16 = pkt[10..16].iter().map(|&b| b as u16).sum();
-        assert_eq!(pkt[8], (chk & 0xFF) as u8);
-        assert_eq!(pkt[9], (chk >> 8) as u8);
+        assert_eq!(pkt[8..10], checksum16(&pkt[10..16]).to_le_bytes());
     }
 }
