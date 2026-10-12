@@ -175,26 +175,19 @@ impl RfcommSocket {
                 unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n > 0 {
                 response.extend_from_slice(&buf[..n as usize]);
-                // Brief extra wait for trailing bytes
-                let extra_tv = libc::timeval {
-                    tv_sec: 0,
-                    tv_usec: 50000, // 50ms
-                };
-                unsafe {
-                    libc::setsockopt(
-                        self.fd,
-                        libc::SOL_SOCKET,
-                        libc::SO_RCVTIMEO,
-                        &extra_tv as *const libc::timeval as *const libc::c_void,
-                        std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-                    );
+                match frame_len(&response) {
+                    // Stop the moment the frame is whole: a fixed grace wait
+                    // here cost ~50 ms per data-packet ack, enough to starve
+                    // the printhead mid-label over Bluetooth.
+                    Some(len) if response.len() >= len => break,
+                    Some(_) => continue,
+                    None if response.len() < 4 => continue,
+                    None => {
+                        self.read_trailing(&mut response, &mut buf);
+                        break;
+                    }
                 }
-                let n2 = unsafe {
-                    libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0)
-                };
-                if n2 > 0 {
-                    response.extend_from_slice(&buf[..n2 as usize]);
-                }
+            } else if !response.is_empty() && frame_len(&response).is_none() {
                 break;
             }
         }
@@ -206,6 +199,27 @@ impl RfcommSocket {
             Ok(None)
         } else {
             Ok(Some(response))
+        }
+    }
+
+    /// Unframed reply: give stragglers one short window, as before.
+    fn read_trailing(&self, response: &mut Vec<u8>, buf: &mut [u8]) {
+        let extra_tv = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 50_000,
+        };
+        unsafe {
+            libc::setsockopt(
+                self.fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                &extra_tv as *const libc::timeval as *const libc::c_void,
+                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            );
+        }
+        let n = unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
+        if n > 0 {
+            response.extend_from_slice(&buf[..n as usize]);
         }
     }
 
@@ -280,6 +294,15 @@ impl crate::spp_pipe::SppPipe for RfcommSocket {
     }
 }
 
+/// Total length of a `7E 5A` frame, from its little-endian length field
+/// (payload length + 4 header bytes — 16 for a command, 512 for a data frame).
+fn frame_len(resp: &[u8]) -> Option<usize> {
+    match resp {
+        [0x7E, 0x5A, lo, hi, ..] => Some(usize::from(u16::from_le_bytes([*lo, *hi])) + 4),
+        _ => None,
+    }
+}
+
 /// Parse a Bluetooth address string "XX:XX:XX:XX:XX:XX" into 6 bytes.
 /// BlueZ uses reversed byte order (LSB first).
 fn parse_bdaddr(addr: &str) -> Result<[u8; 6]> {
@@ -298,6 +321,14 @@ fn parse_bdaddr(addr: &str) -> Result<[u8; 6]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_len_reads_the_header() {
+        assert_eq!(frame_len(&crate::cmd::make_cmd(0x11, 0)), Some(16));
+        assert_eq!(frame_len(&[0x7E, 0x5A, 0x13, 0x00, 0x10]), Some(23));
+        assert_eq!(frame_len(&[0x7E, 0x5A, 0xFC, 0x01]), Some(512));
+        assert_eq!(frame_len(&[0x08, 0x00, 0x00]), None);
+    }
 
     #[test]
     fn test_parse_bdaddr() {
