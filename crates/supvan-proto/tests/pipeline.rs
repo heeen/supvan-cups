@@ -11,27 +11,26 @@ use supvan_proto::bitmap::{
 use supvan_proto::buffer::{
     Density, MAX_BUF_DATA, PRINT_BUF_HEADER, PRINT_BUF_SIZE, PageOptions, split_into_buffers,
 };
-use supvan_proto::compress::{compress_buffers, decompress_lzma};
+use supvan_proto::compress::{CompressedBlock, Packing, compress_buffers, decompress_lzma};
 
-/// No block may exceed the firmware's 4096-byte receive buffer, unless it is
-/// already down to a single print buffer and cannot be split further.
-fn assert_blocks_fit(blocks: &[Vec<u8>]) {
+const PACKINGS: [Packing; 2] = [Packing::Grouped, Packing::PerBuffer];
+
+/// Every block must fit the firmware's 4096-byte receive buffer.
+fn assert_blocks_fit(blocks: &[CompressedBlock]) {
     for (i, b) in blocks.iter().enumerate() {
-        let raw = decompress_lzma(b).expect("block roundtrip").len();
         assert!(
-            b.len() <= 4096 || raw == PRINT_BUF_SIZE,
-            "block {i}: {} compressed bytes spanning {raw} raw — too big to send",
-            b.len()
+            b.data.len() <= 4096,
+            "block {i}: {} compressed bytes — past firmware limit",
+            b.data.len()
         );
     }
 }
 
-/// Decompress each per-buffer block and concatenate, recovering the original
-/// print-buffer bytes.
-fn decompress_blocks(blocks: &[Vec<u8>]) -> Vec<u8> {
+/// Decompress each block and concatenate, recovering the original print-buffer bytes.
+fn decompress_blocks(blocks: &[CompressedBlock]) -> Vec<u8> {
     blocks
         .iter()
-        .flat_map(|b| decompress_lzma(b).expect("block roundtrip"))
+        .flat_map(|b| decompress_lzma(&b.data).expect("block roundtrip"))
         .collect()
 }
 
@@ -95,8 +94,8 @@ fn run_pipeline(
         PageOptions::default(),
     );
 
-    let (blocks, _avg) = compress_buffers(&buffers).unwrap();
-    let compressed: Vec<u8> = blocks.concat();
+    let blocks = compress_buffers(&buffers, Packing::Grouped).unwrap();
+    let compressed: Vec<u8> = blocks.iter().flat_map(|b| b.data.iter().copied()).collect();
     let decompressed = decompress_blocks(&blocks);
 
     (buffers, compressed, decompressed)
@@ -235,16 +234,16 @@ fn test_full_pipeline_test_pattern() {
     );
     assert_eq!(buffers.len(), 3);
 
-    let (blocks, avg) = compress_buffers(&buffers).unwrap();
-    assert!(avg > 0, "average compressed size should be > 0");
-    assert_blocks_fit(&blocks);
-
-    let decompressed = decompress_blocks(&blocks);
-    let mut concat = Vec::with_capacity(buffers.len() * PRINT_BUF_SIZE);
-    for buf in &buffers {
-        concat.extend_from_slice(buf);
+    for packing in PACKINGS {
+        let blocks = compress_buffers(&buffers, packing).unwrap();
+        assert_blocks_fit(&blocks);
+        assert!(blocks.iter().all(|b| b.speed > 0));
+        assert_eq!(
+            decompress_blocks(&blocks),
+            buffers.concat(),
+            "{packing:?}: test pattern roundtrip mismatch"
+        );
     }
-    assert_eq!(decompressed, concat, "test pattern roundtrip mismatch");
 
     // Test pattern should have interesting data in every buffer
     for (i, buf) in buffers.iter().enumerate() {
@@ -303,14 +302,15 @@ fn test_pipeline_various_sizes() {
         );
 
         // Compression roundtrip
-        let (blocks, _) = compress_buffers(&buffers).unwrap();
-        assert_blocks_fit(&blocks);
-        let decompressed = decompress_blocks(&blocks);
-        let mut concat = Vec::with_capacity(buffers.len() * PRINT_BUF_SIZE);
-        for buf in &buffers {
-            concat.extend_from_slice(buf);
+        for packing in PACKINGS {
+            let blocks = compress_buffers(&buffers, packing).unwrap();
+            assert_blocks_fit(&blocks);
+            assert_eq!(
+                decompress_blocks(&blocks),
+                buffers.concat(),
+                "{w_mm}x{h_mm}mm {packing:?}: roundtrip mismatch"
+            );
         }
-        assert_eq!(decompressed, concat, "{w_mm}x{h_mm}mm: roundtrip mismatch");
     }
 }
 

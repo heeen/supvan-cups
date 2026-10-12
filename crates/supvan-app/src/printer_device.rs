@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use supvan_proto::buffer::PRINT_BUF_SIZE;
 use supvan_proto::error::{Error as ProtoError, Result as ProtoResult};
 use supvan_proto::printer::Printer;
 use supvan_proto::status::PrinterStatus;
@@ -48,12 +49,11 @@ impl PrinterHandle {
         }
     }
 
-    /// Stream the compressed raster blocks + speed to the device, one block
-    /// per print buffer.
-    pub async fn print_compressed(&self, blocks: &[Vec<u8>], speed: u16) -> ProtoResult<()> {
+    /// Compress and print one page's buffers the way the transport expects.
+    pub async fn print_buffers(&self, buffers: &[[u8; PRINT_BUF_SIZE]]) -> ProtoResult<()> {
         match self {
-            Self::Owned(p) => p.print_compressed(blocks, speed).await,
-            Self::Shared(arc) => arc.lock().await.print_compressed(blocks, speed).await,
+            Self::Owned(p) => p.print_buffers(buffers).await,
+            Self::Shared(arc) => arc.lock().await.print_buffers(buffers).await,
         }
     }
 

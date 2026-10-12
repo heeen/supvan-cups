@@ -1,8 +1,63 @@
 //! Transport trait abstracting Bluetooth RFCOMM vs USB HID communication.
 
+use crate::compress::Packing;
 use crate::error::Result;
 use crate::status::{MaterialInfo, PrinterStatus};
 use async_trait::async_trait;
+use std::time::Duration;
+
+/// Which vendor tool's print flow a transport follows. Supvan ships one tool
+/// per transport and they disagree on several job-level details; each is
+/// mirrored for the transport it actually drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    /// Android app (`T50PlusPrint`) over Classic SPP / BLE.
+    Android,
+    /// Electron desktop editor (`t5080PrintUtils`) over USB HID.
+    Electron,
+}
+
+impl Flow {
+    pub fn packing(self) -> Packing {
+        match self {
+            Self::Android => Packing::Grouped,
+            Self::Electron => Packing::PerBuffer,
+        }
+    }
+
+    /// START_PRINT parameter: Android sends 0, Electron 1.
+    pub fn start_print_param(self) -> u16 {
+        match self {
+            Self::Android => 0,
+            Self::Electron => 1,
+        }
+    }
+
+    /// Pause between the last data packet and BUF_FULL: Android sleeps 20 ms;
+    /// Electron waits for the bulk ack, then 100 ms + 50 ms of timers.
+    pub fn pre_buf_full_delay(self) -> Duration {
+        match self {
+            Self::Android => Duration::from_millis(20),
+            Self::Electron => Duration::from_millis(150),
+        }
+    }
+
+    /// Pause after the BUF_FULL reply before polling for the next block
+    /// (Electron's 100 ms timer; Android goes straight to its poll loop).
+    pub fn post_buf_full_delay(self) -> Duration {
+        match self {
+            Self::Android => Duration::ZERO,
+            Self::Electron => Duration::from_millis(100),
+        }
+    }
+
+    /// Whether to wait for the device's reply to the final data packet.
+    /// Electron does (its `TRANSFER_ONE` step). Over SPP every packet but the
+    /// last is acked inline, and the final ack is drained before BUF_FULL.
+    pub fn awaits_bulk_ack(self) -> bool {
+        self == Self::Electron
+    }
+}
 
 /// Abstraction over the physical transport to the printer.
 ///
@@ -16,6 +71,9 @@ use async_trait::async_trait;
 /// it's pure byte work with no I/O.
 #[async_trait]
 pub trait Transport: Send + Sync {
+    /// The vendor flow this transport's framing belongs to.
+    fn flow(&self) -> Flow;
+
     /// Send a command with one parameter, return raw response.
     async fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>>;
 

@@ -14,7 +14,7 @@ use crate::cmd::{CMD_NEXT_ZIPPEDBULK, make_cmd, make_cmd_start_trans};
 use crate::data::build_data_frames;
 use crate::error::Result;
 use crate::status::{self, MaterialInfo, PrinterStatus};
-use crate::transport::Transport;
+use crate::transport::{Flow, Transport};
 use async_trait::async_trait;
 
 /// SPP block size advertised in the `NEXT_ZIPPEDBULK` header.
@@ -57,6 +57,10 @@ impl<P: SppPipe> SppCodec<P> {
 
 #[async_trait]
 impl<P: SppPipe> Transport for SppCodec<P> {
+    fn flow(&self) -> Flow {
+        Flow::Android
+    }
+
     async fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>> {
         self.pipe.send_cmd_frame(&make_cmd(cmd, param)).await
     }

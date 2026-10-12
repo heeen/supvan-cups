@@ -313,15 +313,12 @@ pub fn create_gray_bands(label_width_mm: u32, height_mm: u32, bands: u32) -> (Ve
     let bands = bands.max(2);
     let band_dots = (label_width_dots / bands).max(1);
 
-    // Leave the extreme rows blank so the gap sensor still sees clean edges.
-    let ink_rows = height / 8..height * 7 / 8;
-
     let mut gray = vec![255u8; (width * height) as usize];
     for band in 0..bands {
-        // White through black across the head.
+        // White through black across the head, the full label length.
         let level = (255 - (band * 255 / (bands - 1)).min(255)) as u8;
         let from = x0 + band * band_dots;
-        for y in ink_rows.clone() {
+        for y in 0..height {
             let row = (y * width) as usize;
             gray[row + from as usize..row + (from + band_dots) as usize].fill(level);
         }

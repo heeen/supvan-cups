@@ -4,10 +4,8 @@ use std::time::Instant;
 use ipp_printer_app::{JobFailure, JobOptions, PrinterHandle, PrinterReason, RasterDriver};
 use supvan_proto::bitmap::{center_in_printhead, raster_to_column_major};
 use supvan_proto::buffer::{Density, PageOptions, split_into_buffers};
-use supvan_proto::compress::compress_buffers;
 use supvan_proto::dither::{DitherMode, Ditherer, to_gray_line};
 use supvan_proto::error::Error as ProtoError;
-use supvan_proto::speed::calc_speed;
 use supvan_proto::status::PrinterStatus;
 
 use crate::dump::{JobDump, JobManifest, PgmAccumulator, dumps_enabled};
@@ -203,20 +201,16 @@ impl KsJob {
             PageOptions::default(),
         );
 
-        let (compressed, avg) = compress_buffers(&buffers)
-            .map_err(|e| JobFailure::other(format!("compression: {e}")))?;
-        let speed = calc_speed(avg);
-
         let outcome: Result<(), JobFailure> = if let Some(ref printer) = dev.printer {
             dev.printing.store(true, Ordering::Release);
-            let result = printer.print_compressed(&compressed, speed).await;
+            let result = printer.print_buffers(&buffers).await;
             dev.printing.store(false, Ordering::Release);
             match result {
                 Ok(()) => Ok(()),
                 Err(ProtoError::InvalidResponse(msg)) => {
                     if let Ok(Some(s)) = printer.query_status().await {
                         if s.has_error() {
-                            Err(failure_from_status(&s, "print_compressed"))
+                            Err(failure_from_status(&s, "print_buffers"))
                         } else {
                             Err(JobFailure::other(msg))
                         }
@@ -224,7 +218,7 @@ impl KsJob {
                         Err(JobFailure::other(msg))
                     }
                 }
-                Err(e) => Err(failure_from_proto(e, "print_compressed")),
+                Err(e) => Err(failure_from_proto(e, "print_buffers")),
             }
         } else {
             // Mock device: simulate the print delay, then check the simulator

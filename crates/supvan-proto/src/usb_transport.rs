@@ -6,7 +6,7 @@
 use crate::error::Result;
 use crate::hidraw::{HID_REPORT_SIZE, HidrawDevice};
 use crate::status::{MaterialInfo, PrinterStatus};
-use crate::transport::Transport;
+use crate::transport::{Flow, Transport};
 use std::time::Duration;
 
 /// USB HID command magic bytes.
@@ -72,6 +72,7 @@ impl UsbHidTransport {
     /// Send a HID report and read the response.
     fn send_and_recv(&self, data: &[u8]) -> Result<Option<Vec<u8>>> {
         log::debug!("USB TX: {:02x?}", &data[..data.len().min(16)]);
+        self.dev.drain()?;
         self.dev.write_report(data)?;
         let resp = self.dev.read_report(USB_RESPONSE_TIMEOUT)?;
         if let Some(ref r) = resp {
@@ -134,6 +135,10 @@ impl UsbHidTransport {
 
 #[async_trait::async_trait]
 impl Transport for UsbHidTransport {
+    fn flow(&self) -> Flow {
+        Flow::Electron
+    }
+
     async fn send_cmd(&self, cmd: u8, param: u16) -> Result<Option<Vec<u8>>> {
         let frame = Self::make_usb_cmd(cmd, param);
         tokio::task::block_in_place(|| self.send_and_recv(&frame))
@@ -150,18 +155,17 @@ impl Transport for UsbHidTransport {
         read_final_response: bool,
     ) -> Result<Option<Vec<u8>>> {
         tokio::task::block_in_place(|| {
-            // Split raw compressed bytes into 64-byte HID reports.
-            let total = data.chunks(HID_REPORT_SIZE).count();
-            for (i, chunk) in data.chunks(HID_REPORT_SIZE).enumerate() {
-                let is_last = i == total - 1;
-                if is_last && read_final_response {
-                    return self.send_and_recv(chunk);
+            // Raw compressed bytes in 64-byte reports, no per-report header
+            // (Electron `BulkWriteType`). The device answers once, after the
+            // byte count announced in NEXT_ZIPPEDBULK has arrived.
+            let mut chunks = data.chunks(HID_REPORT_SIZE).peekable();
+            self.dev.drain()?;
+            while let Some(chunk) = chunks.next() {
+                if chunks.peek().is_none() && read_final_response {
+                    self.dev.write_report(chunk)?;
+                    return self.dev.read_report(USB_RESPONSE_TIMEOUT);
                 }
                 self.dev.write_report(chunk)?;
-                // Small delay between reports to avoid overwhelming the device
-                if !is_last {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
             }
             Ok(None)
         })
