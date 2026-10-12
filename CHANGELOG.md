@@ -9,6 +9,13 @@ minor version).
 
 ### Fixed
 
+- **8 bpp DeviceK rasters printed as a negative.** The contone path assumes
+  white-is-high (W / sRGB) and never looked at the page header's colour space,
+  so a `cupsColorSpace` K page (0 = blank, `0xFF` = ink) had its white ground
+  dithered to solid black. CUPS 2.4.19 with cups-filters 2.0.1 sends exactly
+  that through a permanent `-m everywhere` queue, even with the PPD's
+  `ColorModel` at Gray. K pages are now inverted before dithering. Seen on a
+  T50M Pro (40x30 mm): an all-black label before, a correct one after.
 - **Contone rasters printed solid black.** The IPP layer advertises `SRGB24`,
   so a Ghostscript-rendered text label arrives as 24 bpp; only 8 bpp was
   dithered, and 24 bpp had its raw RGB copied into the 1-bit page buffer, where
