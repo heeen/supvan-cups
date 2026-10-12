@@ -100,6 +100,17 @@ pub async fn run_cups_raster_job(spec: &JobSpec<'_>, raster: &[u8]) -> Result<()
             copies,
         );
 
+        // The dither path assumes white-is-high contone (W / sRGB). CUPS can
+        // hand us 8 bpp DeviceK instead (0 = blank, 0xFF = ink), which would
+        // print the label as a negative, so flip those lines before dithering.
+        let invert_contone = h.bits_per_pixel == 8
+            && h.color_space == print_raster::model::cups::CupsColorSpace::Black;
+        log::debug!(
+            "raster page {page_num}: {}bpp, colour space {:?}, invert={invert_contone}",
+            h.bits_per_pixel,
+            h.color_space
+        );
+
         if job.is_none() {
             job = Some(RasterDriver::start_job(&handle, &options, &dev)?);
         }
@@ -115,6 +126,9 @@ pub async fn run_cups_raster_job(spec: &JobSpec<'_>, raster: &[u8]) -> Result<()
             futures::AsyncReadExt::read_exact(content, &mut line)
                 .await
                 .map_err(|e| JobFailure::other(format!("raster line {y}: {e}")))?;
+            if invert_contone {
+                line.iter_mut().for_each(|b| *b = !*b);
+            }
             RasterDriver::write_line(state, &options, y as u32, &line)?;
         }
 
