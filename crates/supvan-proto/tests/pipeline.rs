@@ -11,15 +11,15 @@ use supvan_proto::bitmap::{
 use supvan_proto::buffer::{
     Density, MAX_BUF_DATA, PRINT_BUF_HEADER, PRINT_BUF_SIZE, PageOptions, split_into_buffers,
 };
-use supvan_proto::compress::{CompressedBlock, Packing, compress_buffers, decompress_lzma};
+use supvan_proto::compress::{CompressedPage, Packing, compress_buffers, decompress_lzma};
 
 const PACKINGS: [Packing; 2] = [Packing::Grouped, Packing::PerBuffer];
 
-/// Every block must fit the firmware's 4096-byte receive buffer.
-fn assert_blocks_fit(blocks: &[CompressedBlock]) {
-    for (i, b) in blocks.iter().enumerate() {
+/// Every block must fit the firmware's receive buffer, one print buffer's size.
+fn assert_blocks_fit(page: &CompressedPage) {
+    for (i, b) in page.blocks.iter().enumerate() {
         assert!(
-            b.data.len() <= 4096,
+            b.data.len() <= PRINT_BUF_SIZE,
             "block {i}: {} compressed bytes — past firmware limit",
             b.data.len()
         );
@@ -27,11 +27,21 @@ fn assert_blocks_fit(blocks: &[CompressedBlock]) {
 }
 
 /// Decompress each block and concatenate, recovering the original print-buffer bytes.
-fn decompress_blocks(blocks: &[CompressedBlock]) -> Vec<u8> {
-    blocks
+fn decompress_blocks(page: &CompressedPage) -> Vec<u8> {
+    page.blocks
         .iter()
         .flat_map(|b| decompress_lzma(&b.data).expect("block roundtrip"))
         .collect()
+}
+
+/// Whether every buffer carries some image data.
+fn assert_every_buffer_inked(buffers: &[[u8; PRINT_BUF_SIZE]], what: &str) {
+    for (i, buf) in buffers.iter().enumerate() {
+        assert!(
+            buf[PRINT_BUF_HEADER..].iter().any(|&b| b != 0),
+            "buffer {i} has no image data for {what}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -42,34 +52,6 @@ fn decompress_blocks(blocks: &[CompressedBlock]) -> Vec<u8> {
 fn generate_row_major_1bpp(width: u32, height: u32, fill: u8) -> Vec<u8> {
     let bytes_per_row = width.div_ceil(8) as usize;
     vec![fill; bytes_per_row * height as usize]
-}
-
-/// Write a PBM P4 binary image to a `Vec<u8>`.
-fn write_pbm_p4(data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let header = format!("P4\n{width} {height}\n");
-    let mut buf = Vec::with_capacity(header.len() + data.len());
-    buf.extend_from_slice(header.as_bytes());
-    buf.extend_from_slice(data);
-    buf
-}
-
-/// Parse a PBM P4 header, returning (width, height, data_offset).
-fn parse_pbm_p4(pbm: &[u8]) -> (u32, u32, usize) {
-    // P4\n<width> <height>\n<data>
-    // Only parse the header portion as text — pixel data may contain arbitrary bytes.
-    assert!(pbm.len() >= 7, "PBM too short");
-    assert_eq!(&pbm[..3], b"P4\n", "not a P4 PBM");
-    // Find the newline after dimensions
-    let nl_pos = pbm[3..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .expect("missing newline after dimensions");
-    let dims = std::str::from_utf8(&pbm[3..3 + nl_pos]).expect("dimensions not ASCII");
-    let mut parts = dims.split_whitespace();
-    let w: u32 = parts.next().unwrap().parse().unwrap();
-    let h: u32 = parts.next().unwrap().parse().unwrap();
-    let offset = 3 + nl_pos + 1; // "P4\n" + dims + "\n"
-    (w, h, offset)
 }
 
 /// Run the full pipeline on row-major MSB-first raster data and return
@@ -94,9 +76,9 @@ fn run_pipeline(
         PageOptions::default(),
     );
 
-    let blocks = compress_buffers(&buffers, Packing::Grouped).unwrap();
-    let compressed: Vec<u8> = blocks.iter().flat_map(|b| b.data.iter().copied()).collect();
-    let decompressed = decompress_blocks(&blocks);
+    let page = compress_buffers(&buffers, Packing::Grouped).unwrap();
+    let compressed: Vec<u8> = page.blocks.iter().flat_map(|b| b.data.clone()).collect();
+    let decompressed = decompress_blocks(&page);
 
     (buffers, compressed, decompressed)
 }
@@ -111,46 +93,15 @@ fn test_full_pipeline_solid_black() {
     let width = 40 * DOTS_PER_MM; // 320 pixels
     let height = 30 * DOTS_PER_MM; // 240 pixels
     let raster = generate_row_major_1bpp(width, height, 0xFF);
-
-    // Verify PBM write/parse roundtrip on the source raster
-    let pbm = write_pbm_p4(&raster, width, height);
-    let (pw, ph, offset) = parse_pbm_p4(&pbm);
-    assert_eq!(pw, width);
-    assert_eq!(ph, height);
-    assert_eq!(&pbm[offset..], &raster[..]);
-
-    // Run full pipeline
     let (buffers, compressed, decompressed) = run_pipeline(&raster, width, height);
 
     // 48 bytes/line, 240 cols, margins 8+8 = 224 image cols
     // max_cols = 4074/48 = 84 → 84+84+56 = 224
     assert_eq!(buffers.len(), 3, "expected 3 buffers for 40x30mm");
 
-    // Compressed data should be non-trivial
-    assert!(compressed.len() > 13, "compressed too small");
-
-    // Decompressed should be exactly buffers.len() * 4096
-    assert_eq!(
-        decompressed.len(),
-        buffers.len() * PRINT_BUF_SIZE,
-        "decompressed size mismatch"
-    );
-
-    // Byte-exact match between buffers and decompressed
-    let mut concat = Vec::with_capacity(buffers.len() * PRINT_BUF_SIZE);
-    for buf in &buffers {
-        concat.extend_from_slice(buf);
-    }
-    assert_eq!(decompressed, concat, "roundtrip mismatch");
-
-    // Each buffer should have non-zero image data (solid black label)
-    for (i, buf) in buffers.iter().enumerate() {
-        let has_data = buf[PRINT_BUF_HEADER..].iter().any(|&b| b != 0);
-        assert!(
-            has_data,
-            "buffer {i} has no image data for solid black input"
-        );
-    }
+    assert!(!compressed.is_empty());
+    assert_eq!(decompressed, buffers.concat(), "roundtrip mismatch");
+    assert_every_buffer_inked(&buffers, "solid black input");
 }
 
 /// Solid-white 40x30mm label: all 0x00 raster.
@@ -163,15 +114,8 @@ fn test_full_pipeline_solid_white() {
     let (buffers, _compressed, decompressed) = run_pipeline(&raster, width, height);
 
     assert_eq!(buffers.len(), 3);
+    assert_eq!(decompressed, buffers.concat());
 
-    // Decompressed roundtrip
-    let mut concat = Vec::with_capacity(buffers.len() * PRINT_BUF_SIZE);
-    for buf in &buffers {
-        concat.extend_from_slice(buf);
-    }
-    assert_eq!(decompressed, concat);
-
-    // Image data region should be all zeros (white)
     for (i, buf) in buffers.iter().enumerate() {
         let all_zero = buf[PRINT_BUF_HEADER..].iter().all(|&b| b == 0);
         assert!(all_zero, "buffer {i} has non-zero data for white input");
@@ -195,20 +139,9 @@ fn test_full_pipeline_checkerboard() {
     let (buffers, compressed, decompressed) = run_pipeline(&raster, width, height);
 
     assert_eq!(buffers.len(), 3);
-    assert!(compressed.len() > 13);
-
-    // Roundtrip
-    let mut concat = Vec::with_capacity(buffers.len() * PRINT_BUF_SIZE);
-    for buf in &buffers {
-        concat.extend_from_slice(buf);
-    }
-    assert_eq!(decompressed, concat);
-
-    // Checkerboard should produce non-trivial data in all buffers
-    for (i, buf) in buffers.iter().enumerate() {
-        let has_data = buf[PRINT_BUF_HEADER..].iter().any(|&b| b != 0);
-        assert!(has_data, "buffer {i} has no data for checkerboard input");
-    }
+    assert!(!compressed.is_empty());
+    assert_eq!(decompressed, buffers.concat());
+    assert_every_buffer_inked(&buffers, "checkerboard input");
 }
 
 /// Test pattern from `create_test_pattern(40, 30)`.
@@ -235,21 +168,16 @@ fn test_full_pipeline_test_pattern() {
     assert_eq!(buffers.len(), 3);
 
     for packing in PACKINGS {
-        let blocks = compress_buffers(&buffers, packing).unwrap();
-        assert_blocks_fit(&blocks);
-        assert!(blocks.iter().all(|b| b.speed > 0));
+        let page = compress_buffers(&buffers, packing).unwrap();
+        assert_blocks_fit(&page);
+        assert!(page.speed > 0);
         assert_eq!(
-            decompress_blocks(&blocks),
+            decompress_blocks(&page),
             buffers.concat(),
             "{packing:?}: test pattern roundtrip mismatch"
         );
     }
-
-    // Test pattern should have interesting data in every buffer
-    for (i, buf) in buffers.iter().enumerate() {
-        let has_data = buf[PRINT_BUF_HEADER..].iter().any(|&b| b != 0);
-        assert!(has_data, "buffer {i} has no data for test pattern");
-    }
+    assert_every_buffer_inked(&buffers, "the test pattern");
 }
 
 /// Parametric test over various label sizes.
@@ -291,7 +219,6 @@ fn test_pipeline_various_sizes() {
             PageOptions::default(),
         );
 
-        // Verify expected buffer count
         let image_cols = height - DEFAULT_MARGIN_DOTS as u32 * 2;
         let max_cols_per_buf = MAX_BUF_DATA as u32 / PRINTHEAD_BYTES_PER_LINE;
         let expected_bufs = image_cols.div_ceil(max_cols_per_buf) as usize;
@@ -301,44 +228,16 @@ fn test_pipeline_various_sizes() {
             "{w_mm}x{h_mm}mm: buffer count mismatch"
         );
 
-        // Compression roundtrip
         for packing in PACKINGS {
-            let blocks = compress_buffers(&buffers, packing).unwrap();
-            assert_blocks_fit(&blocks);
+            let page = compress_buffers(&buffers, packing).unwrap();
+            assert_blocks_fit(&page);
             assert_eq!(
-                decompress_blocks(&blocks),
+                decompress_blocks(&page),
                 buffers.concat(),
                 "{w_mm}x{h_mm}mm {packing:?}: roundtrip mismatch"
             );
         }
     }
-}
-
-/// PBM P4 write/read roundtrip.
-#[test]
-fn test_pbm_write_read() {
-    let width = 40 * DOTS_PER_MM; // 320
-    let height = 30 * DOTS_PER_MM; // 240
-    let bytes_per_row = width.div_ceil(8) as usize;
-
-    // Generate a recognizable pattern
-    let mut data = vec![0u8; bytes_per_row * height as usize];
-    for y in 0..height as usize {
-        for bx in 0..bytes_per_row {
-            data[y * bytes_per_row + bx] = ((y + bx) & 0xFF) as u8;
-        }
-    }
-
-    let pbm = write_pbm_p4(&data, width, height);
-    let (pw, ph, offset) = parse_pbm_p4(&pbm);
-
-    assert_eq!(pw, width);
-    assert_eq!(ph, height);
-    assert_eq!(
-        &pbm[offset..],
-        &data[..],
-        "PBM pixel data does not match original"
-    );
 }
 
 /// Every column the caller hands in must reach a buffer.

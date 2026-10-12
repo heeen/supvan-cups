@@ -6,7 +6,7 @@
 use crate::cmd::{CmdFrame, frame_len};
 use crate::data::DataFrame;
 use crate::error::{Error, Result};
-use crate::spp_pipe::{SPP_CHUNK, SPP_CHUNK_DELAY};
+use crate::spp_pipe::{LinkCost, SPP_CHUNK, SPP_CHUNK_DELAY};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::Duration;
 
@@ -21,6 +21,15 @@ const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const REPLY_POLL: Duration = Duration::from_millis(20);
 /// Grace window for stragglers of a reply that isn't a `7E 5A` frame.
 const UNFRAMED_TRAILING_WAIT: Duration = Duration::from_millis(50);
+
+/// Measured on a T50M Pro: a data frame costs ~50 ms (four paced chunks plus
+/// the ack round trip), a block's three commands ~180 ms. A dense 10.5 mm
+/// buffer (~2.5 KB, five frames) therefore takes ~0.43 s — slower than the
+/// printhead at the speed `calc_speed` picks for it.
+const LINK_COST: LinkCost = LinkCost {
+    per_frame: Duration::from_millis(50),
+    per_block: Duration::from_millis(180),
+};
 
 /// sockaddr_rc structure for RFCOMM connections.
 #[repr(C)]
@@ -198,6 +207,10 @@ impl crate::spp_pipe::SppPipe for RfcommSocket {
         read_response: bool,
     ) -> Result<Option<Vec<u8>>> {
         tokio::task::block_in_place(|| self.send_data_frame_blocking(frame, read_response))
+    }
+
+    fn link_cost(&self) -> Option<LinkCost> {
+        Some(LINK_COST)
     }
 }
 

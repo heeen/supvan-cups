@@ -75,33 +75,21 @@ impl Transport for UsbHidTransport {
         tokio::task::block_in_place(|| self.send_and_recv(&frame))
     }
 
-    async fn send_bulk_data(
-        &self,
-        data: &[u8],
-        read_final_response: bool,
-    ) -> Result<Option<Vec<u8>>> {
+    async fn send_bulk_data(&self, data: &[u8]) -> Result<Option<Vec<u8>>> {
         tokio::task::block_in_place(|| {
-            // Raw compressed bytes in 64-byte reports, no per-report header
-            // (Electron `BulkWriteType`). The device answers once, after the
-            // byte count announced in NEXT_ZIPPEDBULK has arrived.
+            // Raw bytes in 64-byte reports, no per-report header (Electron
+            // `BulkWriteType`). The device answers once, after the byte count
+            // announced in NEXT_ZIPPEDBULK has arrived.
             self.dev.drain()?;
             for chunk in data.chunks(HID_REPORT_SIZE) {
                 self.dev.write_report(chunk)?;
             }
-            if read_final_response {
-                self.dev.read_report(USB_RESPONSE_TIMEOUT)
-            } else {
-                Ok(None)
-            }
+            self.dev.read_report(USB_RESPONSE_TIMEOUT)
         })
     }
 
-    async fn send_bulk_header(
-        &self,
-        compressed_len: u16,
-        _num_packets: usize,
-    ) -> Result<Option<Vec<u8>>> {
-        // USB HID encodes NEXT_ZIPPEDBULK as the total compressed byte length.
+    /// USB carries the total compressed byte length.
+    async fn send_bulk_header(&self, compressed_len: u16) -> Result<Option<Vec<u8>>> {
         self.send_cmd(crate::cmd::CMD_NEXT_ZIPPEDBULK, compressed_len)
             .await
     }

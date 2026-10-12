@@ -7,6 +7,12 @@ pub const PRINT_BUF_SIZE: usize = 4096;
 /// Header size in print buffer.
 pub const PRINT_BUF_HEADER: usize = 14;
 
+/// Header field offsets (see [`build_print_buffer`] for the full layout).
+const HDR_PAGE_REG: usize = 2;
+const HDR_COLS: usize = 4;
+const HDR_BPL: usize = 6;
+const HDR_RED: usize = 12;
+
 /// Margin clamp range (dots) for the print-buffer header.
 const MARGIN_MAX_DOTS: u16 = 900;
 
@@ -201,14 +207,9 @@ pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
         savepaper: p.page.save_paper,
         ..Default::default()
     });
-    buf[2] = page_bits[0];
-    buf[3] = page_bits[1];
-
-    // Column count
-    buf[4..6].copy_from_slice(&p.cols_in_buf.to_le_bytes());
-
-    // Bytes per line
-    buf[6] = p.per_line_byte;
+    buf[HDR_PAGE_REG..HDR_PAGE_REG + 2].copy_from_slice(&page_bits);
+    buf[HDR_COLS..HDR_COLS + 2].copy_from_slice(&p.cols_in_buf.to_le_bytes());
+    buf[HDR_BPL] = p.per_line_byte;
 
     // Margins (clamped 1..=MARGIN_MAX_DOTS)
     let mt = p.margin_top.clamp(1, MARGIN_MAX_DOTS);
@@ -217,7 +218,7 @@ pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
     buf[10..12].copy_from_slice(&mb.to_le_bytes());
 
     // Red deepness — the black trim rides in PAGE_REG_BITS above, not here.
-    buf[12] = p.density.red.min(MAX_DENSITY);
+    buf[HDR_RED] = p.density.red.min(MAX_DENSITY);
 
     // Image data at offset 14
     let data_len = p.image_data.len().min(PRINT_BUF_SIZE - PRINT_BUF_HEADER);
@@ -225,7 +226,10 @@ pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
 
     // Checksum: sum(buf[2..14]) + sum of bytes at each 256-byte boundary
     let data_end = (p.cols_in_buf as usize) * (p.per_line_byte as usize) + PRINT_BUF_HEADER;
-    let mut chk: u32 = buf[2..14].iter().map(|&b| b as u32).sum();
+    let mut chk: u32 = buf[HDR_PAGE_REG..PRINT_BUF_HEADER]
+        .iter()
+        .map(|&b| u32::from(b))
+        .sum();
     let n_strides = data_end / CHECKSUM_STRIDE;
     for i in 1..=n_strides {
         let idx = i * CHECKSUM_STRIDE - 1;
@@ -236,6 +240,18 @@ pub fn build_print_buffer(p: &PrintBufferParams) -> [u8; PRINT_BUF_SIZE] {
     buf[0..2].copy_from_slice(&(chk as u16).to_le_bytes());
 
     buf
+}
+
+/// Feed columns a built buffer prints: its header column count, halved in
+/// two-colour mode, which ships every column once per plane.
+pub(crate) fn printed_cols(buf: &[u8; PRINT_BUF_SIZE]) -> u32 {
+    let cols = u32::from(u16::from_le_bytes([buf[HDR_COLS], buf[HDR_COLS + 1]]));
+    let colour = if buf[HDR_PAGE_REG + 1] & 0x03 == ColourMode::TwoColour.first_cut() {
+        ColourMode::TwoColour
+    } else {
+        ColourMode::Mono
+    };
+    cols / u32::from(colour.planes())
 }
 
 /// A run of feed-direction columns printed at its own density.

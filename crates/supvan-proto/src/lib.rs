@@ -23,7 +23,7 @@ pub mod hidraw;
 pub mod printer;
 pub mod rfcomm;
 pub mod rfid;
-pub mod speed;
+mod speed;
 pub mod spp_pipe;
 pub mod status;
 pub mod transport;

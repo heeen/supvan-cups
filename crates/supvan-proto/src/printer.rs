@@ -4,29 +4,30 @@
 //! CHECK_DEVICE -> poll ready -> START_PRINT -> poll printing ->
 //! transfer buffers -> poll complete.
 
-use crate::buffer::{ColourMode, Density, PRINT_BUF_SIZE, PageOptions};
+use crate::bitmap::DOTS_PER_MM;
+use crate::buffer::{ColourMode, Density, PRINT_BUF_SIZE, PageOptions, printed_cols};
 use crate::cmd::*;
-use crate::compress::{CompressedBlock, compress_buffers};
-use crate::data::DATA_PAYLOAD_SIZE;
+use crate::compress::{CompressedPage, compress_buffers};
 use crate::error::{Error, Result};
-use crate::status::{MaterialInfo, PrinterStatus};
+use crate::status::{MaterialInfo, PrinterStatus, hex_upper};
 use crate::transport::Transport;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Status-poll attempt budgets for the print state machine; each is multiplied
-/// by the poll interval inside its wait loop.
-const READY_ATTEMPTS: usize = 60;
-const PRINTING_ATTEMPTS: usize = 60;
+/// How often the job-level waits poll status (the Android app's 100 ms).
+const STATUS_POLL: Duration = Duration::from_millis(100);
+const READY_WAIT: Duration = Duration::from_secs(6);
+const PRINTING_WAIT: Duration = Duration::from_secs(6);
+const COMPLETION_WAIT: Duration = Duration::from_secs(30);
 
 /// Both vendor tools poll status in a tight loop until `BufSta` clears before
 /// each block (Android every 20 ms, Electron every 5 ms). The budget has to
 /// cover the firmware printing out whatever it already holds.
-const BUFFER_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const BUFFER_POLL: Duration = Duration::from_millis(20);
 const BUFFER_WAIT: Duration = Duration::from_secs(15);
 
-/// Wait-for-completion budget: COMPLETION_POLLS × COMPLETION_POLL_INTERVAL = 30s.
-const COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const COMPLETION_POLLS: usize = 300;
+/// Run the head at most this fraction of what a slow link can deliver, so link
+/// jitter doesn't starve it.
+const LINK_HEADROOM: f32 = 0.85;
 
 /// Strip the `ble://` (or `ble:`) scheme from a target string.
 fn ble_target(target: &str) -> Option<&str> {
@@ -87,11 +88,16 @@ impl Printer {
         Self::open_bt(target)
     }
 
+    /// Send a command; whether the device acked it.
+    async fn send_acked(&self, cmd: u8, param: u16) -> Result<bool> {
+        let resp = self.transport.send_cmd(cmd, param).await?;
+        Ok(resp.is_some_and(|r| self.transport.validate_response(&r, cmd)))
+    }
+
     /// CHECK_DEVICE (0x12) - verify printer is present.
     pub async fn check_device(&self) -> Result<bool> {
         log::info!("CHECK_DEVICE");
-        let resp = self.transport.send_cmd(CMD_CHECK_DEVICE, 0).await?;
-        Ok(resp.is_some_and(|r| self.transport.validate_response(&r, CMD_CHECK_DEVICE)))
+        self.send_acked(CMD_CHECK_DEVICE, 0).await
     }
 
     /// INQUIRY_STA (0x11) - query printer status.
@@ -129,7 +135,7 @@ impl Printer {
     }
 
     /// START_PRINT (0x13), with the parameter this transport's vendor sends.
-    pub async fn start_print(&self) -> Result<Option<Vec<u8>>> {
+    async fn start_print(&self) -> Result<Option<Vec<u8>>> {
         let flow = self.transport.flow();
         log::info!("START_PRINT ({flow:?})");
         self.transport
@@ -138,7 +144,7 @@ impl Printer {
     }
 
     /// STOP_PRINT (0x14).
-    pub async fn stop_print(&self) -> Result<Option<Vec<u8>>> {
+    async fn stop_print(&self) -> Result<Option<Vec<u8>>> {
         log::info!("STOP_PRINT");
         self.transport.send_cmd(CMD_STOP_PRINT, 0).await
     }
@@ -147,8 +153,7 @@ impl Printer {
     /// the device acks; errors if there is no response.
     pub async fn paper_skip(&self) -> Result<()> {
         log::info!("PAPER_SKIP");
-        let resp = self.transport.send_cmd(CMD_PAPER_SKIP, 0).await?;
-        if resp.is_some_and(|r| self.transport.validate_response(&r, CMD_PAPER_SKIP)) {
+        if self.send_acked(CMD_PAPER_SKIP, 0).await? {
             Ok(())
         } else {
             Err(Error::InvalidResponse("PAPER_SKIP: no ack".into()))
@@ -172,14 +177,10 @@ impl Printer {
             .map_err(|_| Error::InvalidParam(format!("RFID record too long: {}", record.len())))?;
         log::info!("SET_RFID_DATA: {len} bytes");
 
-        let resp = self.transport.send_cmd(CMD_SET_RFID_DATA, len).await?;
-        if !resp.is_some_and(|r| self.transport.validate_response(&r, CMD_SET_RFID_DATA)) {
+        if !self.send_acked(CMD_SET_RFID_DATA, len).await? {
             return Err(Error::InvalidResponse("SET_RFID_DATA: no ack".into()));
         }
-
-        // Unlike the print path, the vendor does read a response after the last
-        // frame here: there is no BUF_FULL to ack the transfer instead.
-        self.transport.send_bulk_data(record, true).await?;
+        self.transport.send_bulk_data(record).await?;
         Ok(())
     }
 
@@ -201,11 +202,7 @@ impl Printer {
 
         self.set_rfid_data(&mat.encode()).await?;
 
-        let expected: String = mat
-            .uuid_bytes()
-            .iter()
-            .map(|b| format!("{b:02X}"))
-            .collect();
+        let expected = hex_upper(&mat.uuid_bytes());
         let mut last = None;
         for _ in 0..SETTLE_POLLS {
             tokio::time::sleep(SETTLE_INTERVAL).await;
@@ -249,100 +246,47 @@ impl Printer {
         self.transport.send_cmd(cmd, param).await
     }
 
-    /// Wait for device to be idle (not busy, not printing).
-    pub async fn wait_ready(&self, max_attempts: usize) -> Result<Option<PrinterStatus>> {
-        for _ in 0..max_attempts {
-            let st = self.query_status().await?;
-            if let Some(ref s) = st
-                && !s.device_busy
-                && !s.printing
-            {
-                return Ok(st);
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Ok(None)
-    }
-
-    /// Wait for printing station to become active.
-    ///
-    /// Aborts early via `Error::InvalidResponse` if the printer raises an
-    /// error flag (label end, cover open, mode mismatch, etc.) — those
-    /// states cause the firmware to drop the BT link and beep, and there's
-    /// no point continuing the print.
-    pub async fn wait_printing(&self, max_attempts: usize) -> Result<Option<PrinterStatus>> {
-        for _ in 0..max_attempts {
-            let st = self.query_status().await?;
-            if let Some(ref s) = st {
-                if s.has_error() {
-                    return Err(Error::InvalidResponse(format!(
-                        "printer error after START_PRINT: {}",
-                        s.error_description().unwrap_or_default()
-                    )));
-                }
-                if s.printing {
-                    return Ok(st);
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Ok(None)
-    }
-
-    /// Poll until the firmware has room for another block (`BufSta == 0`).
-    async fn wait_buffer_ready(&self) -> Result<PrinterStatus> {
-        let started = std::time::Instant::now();
+    /// Poll status every `interval` until `done` yields a value, failing on any
+    /// error flag or once `budget` runs out. `what` names the wait in errors.
+    async fn poll_status<T>(
+        &self,
+        what: &'static str,
+        budget: Duration,
+        interval: Duration,
+        mut done: impl FnMut(&PrinterStatus) -> Option<T>,
+    ) -> Result<T> {
+        let started = Instant::now();
         loop {
             if let Some(s) = self.query_status().await? {
-                if s.has_error() {
-                    return Err(Error::InvalidResponse(format!(
-                        "printer error while waiting for buffer: {}",
-                        s.error_description().unwrap_or_default()
-                    )));
-                }
-                if !s.buf_full {
-                    return Ok(s);
+                s.ensure_ok(&format!("while waiting for {what}"))?;
+                if let Some(v) = done(&s) {
+                    return Ok(v);
                 }
             }
-            if started.elapsed() >= BUFFER_WAIT {
-                return Err(Error::Timeout("printer buffer to drain"));
+            if started.elapsed() >= budget {
+                return Err(Error::Timeout(what));
             }
-            tokio::time::sleep(BUFFER_POLL_INTERVAL).await;
+            tokio::time::sleep(interval).await;
         }
     }
 
     /// Send one compressed block: NEXT_ZIPPEDBULK → data → BUF_FULL.
-    async fn transfer_compressed(&self, block: &CompressedBlock) -> Result<()> {
+    async fn transfer_compressed(&self, data: &[u8], speed: u16) -> Result<()> {
         let flow = self.transport.flow();
-        let compressed_len = u16::try_from(block.data.len())
+        let len = u16::try_from(data.len())
             .map_err(|_| Error::InvalidParam("compressed block too large".into()))?;
-        let num_packets = block.data.len().div_ceil(DATA_PAYLOAD_SIZE);
 
-        // Each transport encodes this header its own way (SPP: block size 512
-        // + packet count; USB: total byte length).
-        if self
-            .transport
-            .send_bulk_header(compressed_len, num_packets)
-            .await?
-            .is_none()
-        {
+        if self.transport.send_bulk_header(len).await?.is_none() {
             return Err(Error::InvalidResponse(
                 "no response to NEXT_ZIPPEDBULK".into(),
             ));
         }
-
-        let ack = self
-            .transport
-            .send_bulk_data(&block.data, flow.awaits_bulk_ack())
-            .await?;
-        if flow.awaits_bulk_ack() && ack.is_none() {
-            log::warn!("no ack after the bulk data; sending BUF_FULL anyway");
-        }
+        self.transport.send_bulk_data(data).await?;
 
         tokio::time::sleep(flow.pre_buf_full_delay()).await;
-        log::info!("BUF_FULL: len={compressed_len}, speed={}", block.speed);
+        log::info!("BUF_FULL: len={len}, speed={speed}");
         self.transport
-            .send_cmd_two(CMD_BUF_FULL, compressed_len, block.speed)
+            .send_cmd_two(CMD_BUF_FULL, len, speed)
             .await?
             .ok_or_else(|| Error::InvalidResponse("no response to BUF_FULL".into()))?;
         tokio::time::sleep(flow.post_buf_full_delay()).await;
@@ -352,84 +296,106 @@ impl Printer {
     /// Compress a page's print buffers the way this transport's vendor tool
     /// does, then print them.
     pub async fn print_buffers(&self, buffers: &[[u8; PRINT_BUF_SIZE]]) -> Result<()> {
-        let blocks = compress_buffers(buffers, self.transport.flow().packing())?;
-        self.print_compressed(&blocks).await
+        let mut page = compress_buffers(buffers, self.transport.flow().packing())?;
+        if let Some(cap) = self.link_speed_cap(&page, buffers)
+            && cap < page.speed
+        {
+            log::info!(
+                "speed {} -> {cap}: the link can't feed it faster",
+                page.speed
+            );
+            page.speed = cap;
+        }
+        self.print_compressed(&page).await
     }
 
-    /// Run one print job over pre-compressed blocks — the shared skeleton of
-    /// Android `T50PlusPrint.doPrint()` and Electron `t5080PrintUtils`:
-    /// CHECK_DEVICE → wait idle → START_PRINT → wait printing → per block,
-    /// wait for `BufSta == 0` then transfer → wait until printing clears.
-    pub async fn print_compressed(&self, blocks: &[CompressedBlock]) -> Result<()> {
-        if blocks.is_empty() {
-            return Err(Error::InvalidParam("no compressed blocks to print".into()));
+    /// The fastest vendor speed this link can feed every block of the page at.
+    ///
+    /// The vendor speed rule only looks at density, and over Classic BT a
+    /// dense halftone buffer arrives slower than the head prints it at that
+    /// speed — the head stalls mid-label and leaves stripes. The Android app
+    /// dodges it only by forcing speed 5 for photos.
+    fn link_speed_cap(
+        &self,
+        page: &CompressedPage,
+        buffers: &[[u8; PRINT_BUF_SIZE]],
+    ) -> Option<u16> {
+        let mut rest = buffers;
+        let mut cap = None;
+        for block in &page.blocks {
+            let (mine, tail) = rest.split_at(block.source_buffers);
+            rest = tail;
+            let secs = self
+                .transport
+                .block_delivery_time(block.data.len())?
+                .as_secs_f32();
+            let mm = mine.iter().map(printed_cols).sum::<u32>() as f32 / DOTS_PER_MM as f32;
+            let speed = crate::speed::fastest_at_most(mm / secs * LINK_HEADROOM);
+            cap = Some(cap.map_or(speed, |c: u16| c.min(speed)));
         }
+        cap
+    }
 
+    /// Run one print job — the shared skeleton of Android
+    /// `T50PlusPrint.doPrint()` and Electron `t5080PrintUtils`: CHECK_DEVICE →
+    /// wait idle → START_PRINT → wait printing → per block, wait for
+    /// `BufSta == 0` then transfer → wait until printing clears.
+    async fn print_compressed(&self, page: &CompressedPage) -> Result<()> {
         if !self.check_device().await? {
             return Err(Error::InvalidResponse("CHECK_DEVICE failed".into()));
         }
-        let status = self
-            .wait_ready(READY_ATTEMPTS)
-            .await?
-            .ok_or_else(|| Error::InvalidResponse("timeout waiting for device ready".into()))?;
-        if status.has_error() {
-            return Err(Error::InvalidResponse(format!(
-                "printer error: {}",
-                status.error_description().unwrap_or_default()
-            )));
-        }
+        self.poll_status("the device to go idle", READY_WAIT, STATUS_POLL, |s| {
+            (!s.device_busy && !s.printing).then_some(())
+        })
+        .await?;
 
         self.start_print().await?;
-        self.wait_printing(PRINTING_ATTEMPTS)
-            .await?
-            .ok_or_else(|| Error::InvalidResponse("timeout waiting for printing station".into()))?;
+        self.poll_status("printing to start", PRINTING_WAIT, STATUS_POLL, |s| {
+            s.printing.then_some(())
+        })
+        .await?;
 
-        for (i, block) in blocks.iter().enumerate() {
-            let before = match self.wait_buffer_ready().await {
-                Ok(s) => s,
+        for (i, block) in page.blocks.iter().enumerate() {
+            let before = match self
+                .poll_status(
+                    "the printer buffer to drain",
+                    BUFFER_WAIT,
+                    BUFFER_POLL,
+                    |s| (!s.buf_full).then(|| s.summary()),
+                )
+                .await
+            {
+                Ok(summary) => summary,
                 Err(e) => {
                     self.stop_print().await?;
                     return Err(e);
                 }
             };
             log::info!(
-                "block {}/{}: {} bytes ({} bufs), speed={}, before: {}",
+                "block {}/{}: {} bytes ({} bufs), speed={}, before: {before}",
                 i + 1,
-                blocks.len(),
+                page.blocks.len(),
                 block.data.len(),
                 block.source_buffers,
-                block.speed,
-                before.summary()
+                page.speed,
             );
-            self.transfer_compressed(block).await?;
+            self.transfer_compressed(&block.data, page.speed).await?;
         }
 
         // Both vendors call the job done once the printing flag drops.
-        for _ in 0..COMPLETION_POLLS {
-            tokio::time::sleep(COMPLETION_POLL_INTERVAL).await;
-            if let Some(s) = self.query_status().await? {
+        let still_buffered = self
+            .poll_status("print completion", COMPLETION_WAIT, STATUS_POLL, |s| {
                 log::debug!("completion poll: {}", s.summary());
-                if s.has_error() {
-                    return Err(Error::InvalidResponse(format!(
-                        "printer error while printing: {}",
-                        s.error_description().unwrap_or_default()
-                    )));
-                }
-                if !s.printing && !s.device_busy {
-                    if s.buf_full {
-                        return Err(Error::InvalidResponse(
-                            "printer stopped with data still buffered — the page did not \
-                             finish"
-                                .into(),
-                        ));
-                    }
-                    log::info!("print complete");
-                    return Ok(());
-                }
-            }
+                (!s.printing && !s.device_busy).then_some(s.buf_full)
+            })
+            .await?;
+        if still_buffered {
+            return Err(Error::InvalidResponse(
+                "printer stopped with data still buffered — the page did not finish".into(),
+            ));
         }
-        log::warn!("timeout waiting for print completion");
-        Err(Error::Timeout("print completion"))
+        log::info!("print complete");
+        Ok(())
     }
 
     /// Full test print workflow: generate test pattern, build buffers, compress, print.

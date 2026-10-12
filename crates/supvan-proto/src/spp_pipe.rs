@@ -12,7 +12,7 @@
 //! differ only in their pipe.
 
 use crate::cmd::{CMD_NEXT_ZIPPEDBULK, CmdFrame, make_cmd, make_cmd_start_trans};
-use crate::data::{DATA_FRAME_LEN, DataFrame, build_data_frames};
+use crate::data::{DATA_FRAME_LEN, DATA_PAYLOAD_SIZE, DataFrame, build_data_frames};
 use crate::error::Result;
 use crate::status::{self, MaterialInfo, PrinterStatus};
 use crate::transport::{Flow, Transport};
@@ -45,6 +45,19 @@ pub trait SppPipe: Send + Sync {
     fn acks_data_frames(&self) -> bool {
         true
     }
+
+    /// Measured cost of this link, if it is slow enough to matter.
+    fn link_cost(&self) -> Option<LinkCost> {
+        None
+    }
+}
+
+/// What moving a block costs on a link: per data frame (paced writes plus its
+/// ack) and per block (NEXT_ZIPPEDBULK, BUF_FULL and a status poll).
+#[derive(Debug, Clone, Copy)]
+pub struct LinkCost {
+    pub per_frame: Duration,
+    pub per_block: Duration,
 }
 
 /// Drives an [`SppPipe`] to implement the SPP-framed [`Transport`] protocol
@@ -75,41 +88,32 @@ impl<P: SppPipe> Transport for SppCodec<P> {
             .await
     }
 
-    async fn send_bulk_header(
-        &self,
-        _compressed_len: u16,
-        num_packets: usize,
-    ) -> Result<Option<Vec<u8>>> {
-        self.send_cmd_two(
-            CMD_NEXT_ZIPPEDBULK,
-            DATA_FRAME_LEN as u16,
-            num_packets as u16,
-        )
-        .await
+    async fn send_bulk_header(&self, compressed_len: u16) -> Result<Option<Vec<u8>>> {
+        let packets = usize::from(compressed_len).div_ceil(DATA_PAYLOAD_SIZE);
+        self.send_cmd_two(CMD_NEXT_ZIPPEDBULK, DATA_FRAME_LEN as u16, packets as u16)
+            .await
     }
 
-    async fn send_bulk_data(
-        &self,
-        data: &[u8],
-        read_final_response: bool,
-    ) -> Result<Option<Vec<u8>>> {
-        // The Android reference (`BasePrint.transferSplitData(..., true, ...)`)
-        // reads a response after EVERY data packet, not only the last. The
-        // firmware acks each packet and expects us to drain that ack before the
-        // next — otherwise leftover RX bytes confuse the next BUF_FULL read.
-        // Links that don't ack at all (BLE) opt out via `acks_data_frames`.
+    async fn send_bulk_data(&self, data: &[u8]) -> Result<Option<Vec<u8>>> {
+        // `BasePrint.transferSplitData(..., true, ...)` reads the ack after
+        // every data frame. We skip the last one: the firmware sends it only
+        // once it has digested the whole block, ~0.4 s later on a dense block,
+        // and waiting for it halves Bluetooth throughput — the head then
+        // outruns the data and stalls. Whatever does arrive is drained before
+        // the next command. Links that don't ack at all (BLE) never wait.
         let acked = self.pipe.acks_data_frames();
         let frames = build_data_frames(data)?;
-        let mut last_resp = None;
+        let last = frames.len().saturating_sub(1);
         for (i, frame) in frames.iter().enumerate() {
-            let is_last = i == frames.len() - 1;
-            let want_resp = acked && (!is_last || read_final_response);
-            let resp = self.pipe.send_data_frame(frame, want_resp).await?;
-            if is_last {
-                last_resp = resp;
-            }
+            self.pipe.send_data_frame(frame, acked && i < last).await?;
         }
-        Ok(last_resp)
+        Ok(None)
+    }
+
+    fn block_delivery_time(&self, compressed_len: usize) -> Option<Duration> {
+        let cost = self.pipe.link_cost()?;
+        let frames = compressed_len.div_ceil(DATA_PAYLOAD_SIZE) as u32;
+        Some(cost.per_frame * frames + cost.per_block)
     }
 
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus> {
@@ -168,31 +172,26 @@ mod tests {
         }
     }
 
-    async fn asked_for(acks: bool, read_final_response: bool) -> Vec<bool> {
+    async fn asked_for(acks: bool) -> Vec<bool> {
         let codec = SppCodec::new(RecordingPipe {
             acks,
             asked: Mutex::new(Vec::new()),
         });
         // Three frames' worth of payload.
-        let payload = vec![0u8; crate::data::DATA_PAYLOAD_SIZE * 2 + 1];
-        codec
-            .send_bulk_data(&payload, read_final_response)
-            .await
-            .unwrap();
+        let payload = vec![0u8; DATA_PAYLOAD_SIZE * 2 + 1];
+        codec.send_bulk_data(&payload).await.unwrap();
         codec.pipe.asked.lock().unwrap().clone()
     }
 
     #[tokio::test]
-    async fn acking_links_drain_every_frame_but_honour_the_final_flag() {
-        assert_eq!(asked_for(true, false).await, vec![true, true, false]);
-        assert_eq!(asked_for(true, true).await, vec![true, true, true]);
+    async fn acking_links_read_every_ack_but_the_last() {
+        assert_eq!(asked_for(true).await, vec![true, true, false]);
     }
 
     #[tokio::test]
     async fn non_acking_links_never_wait() {
         // BLE: waiting on a frame the firmware never acks costs one response
         // timeout per frame.
-        assert_eq!(asked_for(false, false).await, vec![false, false, false]);
-        assert_eq!(asked_for(false, true).await, vec![false, false, false]);
+        assert_eq!(asked_for(false).await, vec![false, false, false]);
     }
 }

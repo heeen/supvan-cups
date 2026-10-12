@@ -18,7 +18,7 @@ pub enum Flow {
 }
 
 impl Flow {
-    pub fn packing(self) -> Packing {
+    pub(crate) fn packing(self) -> Packing {
         match self {
             Self::Android => Packing::Grouped,
             Self::Electron => Packing::PerBuffer,
@@ -26,7 +26,7 @@ impl Flow {
     }
 
     /// START_PRINT parameter: Android sends 0, Electron 1.
-    pub fn start_print_param(self) -> u16 {
+    pub(crate) fn start_print_param(self) -> u16 {
         match self {
             Self::Android => 0,
             Self::Electron => 1,
@@ -35,7 +35,7 @@ impl Flow {
 
     /// Pause between the last data packet and BUF_FULL: Android sleeps 20 ms;
     /// Electron waits for the bulk ack, then 100 ms + 50 ms of timers.
-    pub fn pre_buf_full_delay(self) -> Duration {
+    pub(crate) fn pre_buf_full_delay(self) -> Duration {
         match self {
             Self::Android => Duration::from_millis(20),
             Self::Electron => Duration::from_millis(150),
@@ -44,18 +44,11 @@ impl Flow {
 
     /// Pause after the BUF_FULL reply before polling for the next block
     /// (Electron's 100 ms timer; Android goes straight to its poll loop).
-    pub fn post_buf_full_delay(self) -> Duration {
+    pub(crate) fn post_buf_full_delay(self) -> Duration {
         match self {
             Self::Android => Duration::ZERO,
             Self::Electron => Duration::from_millis(100),
         }
-    }
-
-    /// Whether to wait for the device's reply to the final data packet.
-    /// Electron does (its `TRANSFER_ONE` step). Over SPP every packet but the
-    /// last is acked inline, and the final ack is drained before BUF_FULL.
-    pub fn awaits_bulk_ack(self) -> bool {
-        self == Self::Electron
     }
 }
 
@@ -83,19 +76,19 @@ pub trait Transport: Send + Sync {
     /// Send the NEXT_ZIPPEDBULK (0x5C) bulk-transfer header, encoded for this
     /// transport: SPP framing carries `(block_size=512, packet_count)`, USB HID
     /// carries the total compressed byte length. Returns the device ack.
-    async fn send_bulk_header(
-        &self,
-        compressed_len: u16,
-        num_packets: usize,
-    ) -> Result<Option<Vec<u8>>>;
+    async fn send_bulk_header(&self, compressed_len: u16) -> Result<Option<Vec<u8>>>;
 
-    /// Send bulk compressed data as transport-native frames.
-    /// If `read_final_response` is true, reads and returns the response after the last frame.
-    async fn send_bulk_data(
-        &self,
-        data: &[u8],
-        read_final_response: bool,
-    ) -> Result<Option<Vec<u8>>>;
+    /// Send bulk data as transport-native frames. Returns the device's reply
+    /// to the transfer when the transport waits for one (USB does; SPP leaves
+    /// it to be drained, see `SppCodec`).
+    async fn send_bulk_data(&self, data: &[u8]) -> Result<Option<Vec<u8>>>;
+
+    /// How long moving a `compressed_len`-byte block takes on this link —
+    /// commands included — when that is slow enough to starve the printhead.
+    /// `None` for links that outrun it, or haven't been measured.
+    fn block_delivery_time(&self, _compressed_len: usize) -> Option<Duration> {
+        None
+    }
 
     /// Parse a status response into PrinterStatus.
     fn parse_status_response(&self, resp: &[u8]) -> Option<PrinterStatus>;
