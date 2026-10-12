@@ -163,8 +163,6 @@ fn job_record(
     })
 }
 
-/// Decode an `image/jpeg` document and print it. Decodes to grayscale,
-/// contain-fits it onto the loaded label (aspect preserved, centered, white
 /// How far `print-quality` moves darkness either side of the baseline.
 ///
 /// Darkness 0–100 maps onto the protocol's 0–15 density, so ~6.7 points is one
@@ -217,6 +215,8 @@ fn effective_darkness(configured: i32, cups_compression: u32, quality: Option<u8
     darkness
 }
 
+/// Decode an `image/jpeg` document and print it. Decodes to grayscale,
+/// contain-fits it onto the loaded label (aspect preserved, centered, white
 /// padding), then drives [`KsJob`]'s existing 8bpp path (dither → device).
 ///
 /// JPEG decode + fit is synchronous; the device transfer is awaited like the
@@ -378,6 +378,7 @@ pub fn config_from_family(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{GrayImage, Luma};
 
     /// CUPS marks `cupsPrintQuality` Normal by default and converts it on
     /// every job, so quality has to nudge the baseline rather than replace it
@@ -422,7 +423,6 @@ mod tests {
         assert_eq!(effective_darkness(37, 101, None), 37);
         assert_eq!(effective_darkness(37, u32::MAX, None), 37);
     }
-    use image::{GrayImage, Luma};
 
     #[test]
     fn fit_luma_contains_and_centers() {

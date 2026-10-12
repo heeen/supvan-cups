@@ -414,19 +414,12 @@ fn build_material(
 /// settle-poll dance lives in `Printer::provision_material`, shared with the
 /// IPP app.
 async fn provision(printer: &Printer, mat: &RfidMaterial) -> Result<(), Box<dyn Error>> {
-    match printer.provision_material(mat).await {
-        Ok(m) => {
-            eprintln!(
-                "Provisioned: {}mm x {}mm, gap {}mm, heat {}/{}, UUID {}",
-                m.width_mm, m.height_mm, m.gap_mm, mat.heat_time_5, mat.heat_time_40, m.uuid
-            );
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Warning: {e}");
-            Ok(())
-        }
-    }
+    let m = printer.provision_material(mat).await?;
+    eprintln!(
+        "Provisioned: {}mm x {}mm, gap {}mm, heat {}/{}, UUID {}",
+        m.width_mm, m.height_mm, m.gap_mm, mat.heat_time_5, mat.heat_time_40, m.uuid
+    );
+    Ok(())
 }
 
 async fn cmd_provision(
@@ -752,10 +745,10 @@ async fn cmd_heat_sweep(
     let printer = connect(target).await?;
     eprintln!(
         "Sweeping {} heat profiles x {} densities on {}mm x {}mm labels.",
-        label.width,
-        label.length,
         heats.len(),
-        densities.len()
+        densities.len(),
+        label.width,
+        label.length
     );
     eprintln!("Bands run top to bottom in the order printed; annotate each strip as it comes out.");
 

@@ -70,7 +70,6 @@ fn bt_addr_to_provider_path(addr: &str) -> Path<'static> {
     Path::from(format!("{PROVIDER_ROOT}/dev_{mangled}"))
 }
 
-/// Emit a PropertiesChanged signal for the Percentage property.
 /// Start the battery provider background thread.
 ///
 /// Returns `None` if the system D-Bus connection or BlueZ registration fails.
