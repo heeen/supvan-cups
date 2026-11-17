@@ -17,7 +17,7 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[cfg(feature = "ble")]
+    #[cfg(all(feature = "ble", target_os = "linux"))]
     #[error("BLE error: {0}")]
     Ble(#[from] bluer::Error),
 

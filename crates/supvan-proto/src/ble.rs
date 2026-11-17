@@ -1,28 +1,37 @@
-//! BLE GATT transport for E11/E12-class printers (BLE-only hardware).
+//! BLE GATT transport for Supvan printers (E11/E12-class and T50M Pro).
 //!
 //! BLE carries the **same** 16-byte SPP command framing and 512-byte data
 //! frames as Classic Bluetooth, so [`BlePipe`] is just another [`SppPipe`] —
 //! the shared [`crate::spp_pipe::SppCodec`] drives it unchanged. Only the byte
 //! pipe differs: GATT notify/write characteristics instead of an RFCOMM stream.
 //!
+//! The byte pipe is per-OS because the GATT clients are: BlueZ over D-Bus
+//! (`bluer`) on Linux, CoreBluetooth (`btleplug`) on macOS. macOS identifies a
+//! peripheral by a per-machine `PeripheralId`, not a MAC, so the two backends
+//! cannot share an address type.
+//!
 //! The wire details follow the vendor Android app (`BLEUtils.java`):
 //! - Connect (TRANSPORT_LE, no bonding — the app never calls `createBond`),
-//!   let BlueZ negotiate the ATT MTU (the app requests 200), discover
+//!   let the stack negotiate the ATT MTU (the app requests 200), discover
 //!   services, enable notifications.
 //! - One of three service/characteristic patterns is auto-detected (see
 //!   [`chars_for_service`]); first match wins.
 //! - Every frame goes out as an ATT **write request** (`BLEUtils.write`), in
 //!   128-byte fragments: `BasePrint.transferSplitData` splits each 512-byte
-//!   data frame into 4 × 128 with ~10 ms between them.
+//!   data frame into 4 × 128 with ~10 ms between them. macOS clamps the
+//!   fragment to the negotiated ATT MTU.
 //! - A command notification echoes the request's command byte at offset 7;
 //!   poll up to ~4 s for the match (the app loops 200 × 20 ms). Data frames
 //!   are **not** acked over BLE — see [`SppPipe::acks_data_frames`].
 //!
-//! This transport is **unverified against hardware** — we own no BLE printer.
-//! It is gated behind the `ble` feature; the pure framing helpers below are
-//! always compiled and unit-tested.
+//! The macOS/CoreBluetooth path is hardware-verified on a T50M Pro (discovery,
+//! probe and print). The Linux/BlueZ path and E11/E12-class hardware remain
+//! unverified; it is gated behind the `ble` feature, and the pure framing
+//! helpers below are always compiled and unit-tested.
 
 use uuid::Uuid;
+
+use crate::spp_pipe::SPP_CHUNK;
 
 /// Build a 16-bit-assigned Bluetooth SIG UUID
 /// (`0000XXXX-0000-1000-8000-00805f9b34fb`).
@@ -63,10 +72,21 @@ fn response_matches(resp: &[u8], cmd: u8) -> bool {
     resp.get(crate::cmd::CMD_OFFSET) == Some(&cmd)
 }
 
-#[cfg(feature = "ble")]
+/// Largest ATT value in one write request at `mtu`, capped at the vendor's
+/// 128-byte fragment. BlueZ fragments itself; CoreBluetooth does not.
+#[cfg_attr(not(all(feature = "ble", target_os = "macos")), allow(dead_code))]
+fn att_chunk(mtu: u16) -> usize {
+    if mtu > 3 {
+        usize::from(mtu - 3).min(SPP_CHUNK)
+    } else {
+        SPP_CHUNK
+    }
+}
+
+#[cfg(all(feature = "ble", target_os = "linux"))]
 pub(crate) use imp::BlePipe;
 
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", target_os = "linux"))]
 mod imp {
     use super::{chars_for_service, response_matches};
     use crate::cmd::{CMD_OFFSET, CmdFrame};
@@ -287,6 +307,13 @@ mod imp {
     }
 }
 
+#[cfg(all(feature = "ble", target_os = "macos"))]
+#[path = "ble_macos.rs"]
+mod imp_macos;
+
+#[cfg(all(feature = "ble", target_os = "macos"))]
+pub(crate) use imp_macos::BlePipe;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +362,17 @@ mod tests {
         assert!(!response_matches(&resp, cmd));
         // Too-short payloads never match.
         assert!(!response_matches(&[0x7e, 0x5a], cmd));
+    }
+
+    #[test]
+    fn att_chunk_respects_mtu_and_vendor_cap() {
+        // ATT write payload is MTU - 3 (opcode + 2-byte handle).
+        assert_eq!(att_chunk(23), 20);
+        assert_eq!(att_chunk(131), SPP_CHUNK);
+        assert_eq!(att_chunk(240), SPP_CHUNK);
+        // A stack that has not reported an MTU keeps the vendor fragment.
+        assert_eq!(att_chunk(0), SPP_CHUNK);
+        assert_eq!(att_chunk(3), SPP_CHUNK);
+        assert_eq!(att_chunk(4), 1);
     }
 }
