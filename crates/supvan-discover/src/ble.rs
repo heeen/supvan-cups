@@ -8,6 +8,10 @@
 //! advertised name (e.g. `T0182A2507162197`) is the firmware serial-name used
 //! to cross-correlate USB/BT/BLE transports for one physical printer.
 //!
+//! On macOS there is no BlueZ and no MAC: CoreBluetooth only reveals a per-host
+//! UUID, so that backend (`imp_macos`) matches on the firmware serial-name
+//! alone and reports the UUID as the address.
+//!
 //! Gated behind the `ble` feature; without it `list_candidates` is a stub that
 //! returns nothing, so discovery wiring compiles on BlueZ-free CI.
 
@@ -22,17 +26,37 @@ pub struct BleCandidate {
 
 /// True if a scanned device looks like a Supvan BLE printer: Supvan's OUI plus
 /// the firmware serial-name shape both scanners share.
-#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+///
+/// Linux only — macOS has no MAC to check (see [`is_supvan_ble_name`]). Kept
+/// compiled everywhere so the OUI rules stay unit-tested on macOS too.
+#[cfg_attr(not(all(feature = "ble", target_os = "linux")), allow(dead_code))]
 fn is_supvan_ble(addr: &str, name: &str) -> bool {
-    models::is_supvan_oui(addr) && models::is_supvan_serial_name(name)
+    models::is_supvan_oui(addr) && is_supvan_ble_name(name)
 }
 
-#[cfg(not(feature = "ble"))]
+/// True if an advertised name is a Supvan firmware serial-name (`T0…`).
+///
+/// The name is the only discriminator macOS can use: CoreBluetooth returns a
+/// per-host UUID instead of the MAC, so the OUI rule cannot apply there.
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+fn is_supvan_ble_name(name: &str) -> bool {
+    models::is_supvan_serial_name(name)
+}
+
+/// No LE backend for this target (or the feature is off): nothing to scan with.
+#[cfg(not(all(feature = "ble", any(target_os = "linux", target_os = "macos"))))]
 pub async fn list_candidates() -> Vec<BleCandidate> {
     Vec::new()
 }
 
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", target_os = "macos"))]
+#[path = "ble_macos.rs"]
+mod imp_macos;
+
+#[cfg(all(feature = "ble", target_os = "macos"))]
+pub use imp_macos::list_candidates;
+
+#[cfg(all(feature = "ble", target_os = "linux"))]
 pub async fn list_candidates() -> Vec<BleCandidate> {
     match scan().await {
         Ok(found) => found,
@@ -43,7 +67,7 @@ pub async fn list_candidates() -> Vec<BleCandidate> {
     }
 }
 
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", target_os = "linux"))]
 async fn scan() -> bluer::Result<Vec<BleCandidate>> {
     use bluer::{DiscoveryFilter, DiscoveryTransport};
     use futures_util::StreamExt;
@@ -142,5 +166,21 @@ mod tests {
         assert!(is_supvan_ble("A4:93:40:AF:B0:B5", "G15Mini"));
         assert!(is_supvan_ble("A4:93:40:AF:B0:B5", "D12foo"));
         assert!(!is_supvan_ble("A4:93:40:AF:B0:B5", "X12foo"));
+    }
+
+    #[test]
+    fn firmware_serial_names_pass_without_an_oui() {
+        // macOS only has the advertised name to go on.
+        assert!(is_supvan_ble_name("T0117A2410211517"));
+        assert!(is_supvan_ble_name("T0182A2507162197"));
+        assert!(is_supvan_ble_name("G15Mini"));
+    }
+
+    #[test]
+    fn non_serial_names_are_rejected() {
+        assert!(!is_supvan_ble_name("Some Headphones"));
+        assert!(!is_supvan_ble_name("E11"));
+        assert!(!is_supvan_ble_name("TX"));
+        assert!(!is_supvan_ble_name(""));
     }
 }

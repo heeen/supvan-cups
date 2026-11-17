@@ -48,9 +48,9 @@ mock://  ───┘    (mock://ID)        │  └─ image/jpeg ─► run_jp
                                     └──── PWG/CUPS raster ─► run_cups_raster_job
 ```
 
-- **Discovery** unifies a printer's USB (hidraw) and Bluetooth (RFCOMM)
-  interfaces into a single `supvan://<id>` device; `SUPVAN_MOCK=1` substitutes a
-  synthetic `mock://` device.
+- **Discovery** unifies a printer's USB (hidraw) and Bluetooth (Classic RFCOMM
+  or BLE on Linux, BLE on macOS) interfaces into a single `supvan://<id>` device;
+  `SUPVAN_MOCK=1` substitutes a synthetic `mock://` device.
 - The **IPP server** (from `ipp-printer-app`) receives jobs; the `print_job`
   callback branches on `document-format` → `run_jpeg_job` (JPEG: decode →
   contain-fit onto the loaded label → dither) or `run_cups_raster_job`
@@ -112,6 +112,13 @@ supvan-cli probe AA:BB:CC:DD:EE:FF           # device/status/material/version
 supvan-cli material /dev/hidraw7             # loaded label + RFID + remaining
 supvan-cli test-print /dev/hidraw7 --density 4
 ```
+
+Bluetooth goes through BlueZ (`bluer`) on Linux and CoreBluetooth (`btleplug`)
+on macOS, which has no device addresses: `supvan-cli discover` prints a
+`ble://<CoreBluetooth-UUID>` target there. Build the CLI with
+`--features ble` (off by default). CoreBluetooth needs the Bluetooth permission
+(TCC) — running from Terminal prompts once and works, while a launchd daemon
+needs a signed `.app` carrying the entitlement (not implemented here).
 
 ## Testing
 

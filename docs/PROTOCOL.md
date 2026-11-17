@@ -41,6 +41,9 @@ extended version) default to `None` on the `Transport` trait and only the
 SPP codec parses them. That isn't a bug; the firmware genuinely can't encode
 them in 8 bytes.
 
+On macOS, Bluetooth is **BLE GATT** through CoreBluetooth (`btleplug`), not
+Classic SPP; see the BLE appendix.
+
 ## BT frame format
 
 ### Command frame (16 bytes, sent to printer)
@@ -667,7 +670,7 @@ the same count over USB and Bluetooth.
 | Genuine-tag signature | `supvan-app::record_is_ours` | We assume a real consumable carries a non-zero `MaterialInfo::code` and records we write never do. Unconfirmed — needs a genuine tag's pages 4+, which are password-protected. The one place a wrong guess could overwrite a real roll. |
 | Consumable tag password | `generalPassword`, commented out upstream | The `SHA-256(UID ‖ Pwkey)` derivation is plausible but never exercised by the vendor's own host code, so unverified. Blocks reading a genuine tag's record. |
 
-## Appendix: BLE GATT transport (implemented behind the `ble` feature, unverified)
+## Appendix: BLE GATT transport (implemented behind the `ble` feature)
 
 We reach the printers over three transports, all sharing the same 16-byte
 command framing and 512-byte data frames:
@@ -675,15 +678,17 @@ command framing and 512-byte data frames:
 - **Classic SPP** (RFCOMM): UUID `00001101-0000-1000-8000-00805F9B34FB`,
   channel auto-detected; 512-byte write chunks, ~10 ms inter-chunk drain.
 - **USB HID**: `0xC0/0x40` framing, 64-byte reports.
-- **BLE GATT**: for BLE-only hardware (E11/E12-class — the vendor gates BLE by
-  `printingProcess == 4`). Implemented in `crates/supvan-proto/src/ble.rs` as a
-  `BlePipe` driven by the shared [`spp_pipe::SppCodec`]; built only with
-  `--features ble` (pulls `bluer` + BlueZ). **Unverified against hardware** — we
-  own no BLE printer, so an E11/E12 reporter must validate the live round-trip.
+- **BLE GATT**: exposed by the T50M Pro (verified over macOS/CoreBluetooth) and
+  by the vendor's BLE-only E11/E12 mode. Implemented in
+  `crates/supvan-proto/src/ble.rs` as a `BlePipe` driven by the shared
+  [`spp_pipe::SppCodec`]; built only with `--features ble`
+  (`bluer`/BlueZ on Linux, `btleplug`/CoreBluetooth on macOS). The macOS path
+  is verified; Linux/BlueZ and E11/E12 hardware are not.
 
 BLE wire details (from the vendor `BLEUtils.java`, as implemented):
 
-- Connect TRANSPORT_LE; BlueZ negotiates the ATT MTU (the app requests 200).
+- Connect TRANSPORT_LE; the OS stack negotiates the ATT MTU (the app requests
+  200).
 - Auto-detect one of three service/characteristic patterns, first match wins:
   `0000fee7-…` (notify == write `0000FEC1-…`), service
   `0000e0ff-3c17-d293-8e48-14fe2e4da212` (notify `0000ffe1-…`, write
@@ -693,18 +698,22 @@ BLE wire details (from the vendor `BLEUtils.java`, as implemented):
 - Every frame is an ATT **write request** (`BLEUtils.write`), in **128-byte**
   fragments with ~10 ms between them: `BasePrint.transferSplitData` splits each
   512-byte data frame into 4 × 128. `writeNoResponse` exists but the T50/G15
-  print flows don't use it for frame transfer.
+  print flows don't use it for frame transfer. macOS/CoreBluetooth sends one ATT
+  value per write, so the fragment is clamped to `MTU - 3` (at most 128).
 - Commands/status: wait for a notification echoing the command byte at
   **offset 7**, polled up to ~4 s (the app loops 200 × 20 ms).
 - Bulk image data is **not acked** over BLE — `transferSplitData` only reads a
   reply in its `CLASSIC_BLUETOOTH` branch. `SppPipe::acks_data_frames` carries
   this difference into the shared codec.
-- Discovery (`crates/supvan-app/src/ble_discover.rs`): LE-transport scan, keep
-  advertisers matching name `^[TGD]\d{2}`, MAC OUI `A4:93:40`, and one of the
-  three GATT services above. Properties are read after the scan window closes,
-  because BlueZ fills `Name`/`UUIDs` in only after `DeviceAdded`.
-- `supvan-cli` reaches BLE through a `ble://<address>` target, built with
-  `--features ble`.
+- Discovery: Linux (`crates/supvan-discover/src/ble.rs`) keeps LE advertisers
+  matching name `^[TGD]\d{2}`, MAC OUI `A4:93:40`, and one of the three GATT
+  services above; properties are read after the scan window closes because
+  BlueZ fills `Name`/`UUIDs` in only after `DeviceAdded`. macOS
+  (`ble_macos.rs`) has no MAC and the T50M Pro advertises no service UUIDs, so
+  it matches the firmware serial-name alone and reports CoreBluetooth's
+  per-host `PeripheralId`.
+- `supvan-cli` reaches BLE through a `ble://<address>` target — a MAC on Linux,
+  the `PeripheralId` string on macOS — built with `--features ble`.
 
 Known unknowns to confirm on real hardware: whether an E11/E12 will drive
 correctly from the **T50 print flow** at all — the vendor runs `printingProcess

@@ -28,13 +28,12 @@ libc = "0.2"
 # JPEG decode for the image/jpeg document-format path (IPP Everywhere). Only
 # the jpeg codec is enabled to keep the build lean.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-# BLE GATT discovery + transport (E11/E12-class printers). Off by default.
-bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
-futures-util = { version = "0.3", optional = true }
 
 [features]
 # BLE is on by default so the app ships GATT support out of the box; disable
-# with --no-default-features for a BlueZ-free build.
+# with --no-default-features for a build without a Bluetooth backend.
 default = ["ble"]
-# Enables BLE GATT discovery (LE scan) and the proto BLE transport.
-ble = ["dep:bluer", "dep:futures-util", "supvan-proto/ble", "supvan-discover/ble"]
+# Enables BLE GATT discovery (LE scan) and the proto BLE transport. The app
+# only consumes them through proto/discover, which own the backend deps
+# (bluer on Linux, btleplug on macOS).
+ble = ["supvan-proto/ble", "supvan-discover/ble"]

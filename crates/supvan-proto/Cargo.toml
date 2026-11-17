@@ -13,14 +13,21 @@ liblzma = "0.4"
 liblzma-sys = "0.4"
 libc = "0.2"
 uuid = "1"
-# BLE GATT transport (E11/E12-class printers). Off by default — pulls bluer +
-# BlueZ build deps. Enable with `--features ble`.
-bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
+# BLE GATT transport (E11/E12-class printers). Off by default — pulls a
+# platform GATT client and its build deps. Enable with `--features ble`.
 futures-util = { version = "0.3", optional = true }
+
+# BlueZ over D-Bus (Linux) versus CoreBluetooth (macOS) are separate stacks, so
+# each client is only a dependency on the platform where its backend compiles.
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+btleplug = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 default = []
-ble = ["dep:bluer", "dep:futures-util"]
+ble = ["dep:bluer", "dep:btleplug", "dep:futures-util"]

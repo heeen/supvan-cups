@@ -13,5 +13,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [features]
 default = []
 # BLE GATT transport for `ble://<address>` targets (E11/E12-class printers).
-# Off by default: it pulls in bluer and BlueZ build dependencies.
+# Off by default: it pulls in the Bluetooth backend deps (bluer on Linux,
+# btleplug on macOS).
 ble = ["supvan-proto/ble", "supvan-discover/ble"]
